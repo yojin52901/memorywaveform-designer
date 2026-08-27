@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Structured editor for memory timing waveforms." />
+    <title>Memory Waveform Designer</title>
+    <link rel="stylesheet" href="./src/ui/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-toolbar">
+        <div>
+          <p class="eyebrow">Structured Memory Waveform Editor</p>
+          <h1>Memory Waveform Designer</h1>
+        </div>
+        <div class="toolbar-actions">
+          <button id="new-document" class="button secondary">New document</button>
+          <button id="export-png" class="button secondary">Export PNG</button>
+          <button id="export-json" class="button">Export JSON</button>
+          <label class="button secondary file-button">Import JSON<input id="import-json" type="file" accept="application/json" /></label>
+          <p id="document-status" class="status-pill">Draft</p>
+        </div>
+      </header>
+      <section class="workspace" aria-label="Waveform editor">
+        <aside id="palette" class="panel" aria-label="Authoring tools"></aside>
+        <section id="editor" class="editor" aria-label="Waveform canvas"></section>
+        <aside id="inspector" class="panel" aria-label="Property inspector"></aside>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
