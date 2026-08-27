@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "python3 -c \"import http.server; http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=4173, bind='0.0.0.0')\"",
     "test": "node --test"
   }
 }
