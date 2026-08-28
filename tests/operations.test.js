@@ -15,7 +15,7 @@ import {
   updateTransition,
   updateSignal
 } from '../src/domain/operations.js';
-import { addAnnotation, addTimingParameter } from '../src/domain/operations.js';
+import { addAnnotation, addTimingParameter, updateAnnotation } from '../src/domain/operations.js';
 import { validateDocument } from '../src/domain/validate.js';
 
 function setupSignal(name = 'WE#') {
@@ -89,6 +89,27 @@ test('editing a transition updates its boundary and post-transition state while 
   assert.equal(validateDocument(updated).valid, true);
 });
 
+test('editing a transition can move it to another signal while preserving its ID', () => {
+  const first = setupSignal('WE#');
+  const document = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const weId = document.semantic.signals[0].id;
+  const ceId = document.semantic.signals[1].id;
+  const withTransition = setSegmentBoundary(document, { signalId: weId, sequence: 1, rightState: 'LOW' });
+  const transitionId = withTransition.semantic.transitions[0].id;
+
+  const updated = updateTransition(withTransition, transitionId, {
+    signalId: ceId,
+    sequence: 1,
+    rightState: 'LOW'
+  });
+
+  assert.equal(updated.semantic.transitions.length, 1);
+  assert.equal(updated.semantic.transitions[0].id, transitionId);
+  assert.equal(updated.semantic.transitions[0].signalId, ceId);
+  assert.equal(updated.semantic.stateSegments.filter((segment) => segment.signalId === weId).length, 1);
+  assert.equal(validateDocument(updated).valid, true);
+});
+
 test('moving a marker moves its complete synchronous transition group', () => {
   const first = setupSignal('WE#');
   const withTwoSignals = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
@@ -122,6 +143,38 @@ test('signal metadata and display order can change without changing semantic tra
 
   assert.equal(moved.semantic.signals[0].name, 'WEB#');
   assert.deepEqual(moved.presentation.signalRowOrder, [updated.semantic.signals[1].id, updated.semantic.signals[0].id]);
+});
+
+test('editing a signal can change its initial state', () => {
+  const initial = setupSignal();
+  const signalId = initial.semantic.signals[0].id;
+
+  const updated = updateSignal(initial, signalId, { initialState: 'LOW' });
+
+  assert.equal(updated.semantic.signals[0].initialState, 'LOW');
+  assert.equal(updated.semantic.stateSegments[0].state, 'LOW');
+  assert.equal(validateDocument(updated).valid, true);
+});
+
+test('editing an annotation can change its text and anchor', () => {
+  const initial = setupSignal();
+  const signalId = initial.semantic.signals[0].id;
+  const annotated = addAnnotation(initial, { text: 'before write', anchorType: 'document' });
+  const annotationId = annotated.semantic.annotations[0].id;
+
+  const updated = updateAnnotation(annotated, annotationId, {
+    text: 'after write',
+    anchorType: 'signal',
+    anchorId: signalId
+  });
+
+  assert.deepEqual(updated.semantic.annotations[0], {
+    id: annotationId,
+    text: 'after write',
+    anchorType: 'signal',
+    anchorId: signalId
+  });
+  assert.equal(validateDocument(updated).valid, true);
 });
 
 test('deleting a signal removes its transitions and dependent presentation references', () => {
