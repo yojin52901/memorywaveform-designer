@@ -1,6 +1,5 @@
 import { ANNOTATION_ANCHOR_TYPES, SIGNAL_TYPES, STATES } from './constants.js';
 import { cloneDocument, createId, getSignal } from './document.js';
-import { parseRequirement } from './requirement.js';
 
 function markerSequence(document, markerId) {
   if (markerId === document.semantic.timeline.startMarkerId) return Number.NEGATIVE_INFINITY;
@@ -424,6 +423,10 @@ function assertOrderedEndpoints(document, startTransitionId, endTransitionId) {
   }
 }
 
+function timingNoteMetadata() {
+  return { parsedRequirement: null, validationStatus: 'note' };
+}
+
 export function addTimingParameter(document, {
   name,
   startTransitionId,
@@ -433,7 +436,7 @@ export function addTimingParameter(document, {
 }) {
   if (!name?.trim()) throw new Error('Timing parameter name is required.');
   assertOrderedEndpoints(document, startTransitionId, endTransitionId);
-  const parsedRequirement = parseRequirement(requirementText);
+  const noteMetadata = timingNoteMetadata();
   const next = cloneDocument(document);
   const parameter = {
     id: createId('tp'),
@@ -441,8 +444,7 @@ export function addTimingParameter(document, {
     startTransitionId,
     endTransitionId,
     requirementText,
-    parsedRequirement,
-    validationStatus: parsedRequirement ? 'parsed' : 'unparsed',
+    ...noteMetadata,
     tags: [...tags]
   };
   next.semantic.timingParameters.push(parameter);
@@ -458,15 +460,15 @@ export function updateTimingParameter(document, parameterId, updates) {
   const endTransitionId = updates.endTransitionId ?? current.endTransitionId;
   assertOrderedEndpoints(document, startTransitionId, endTransitionId);
   const requirementText = updates.requirementText ?? current.requirementText;
-  const parsedRequirement = parseRequirement(requirementText);
+  const noteMetadata = timingNoteMetadata();
   const next = cloneDocument(document);
   const parameter = next.semantic.timingParameters.find((item) => item.id === parameterId);
   parameter.name = updates.name === undefined ? parameter.name : updates.name.trim();
   parameter.startTransitionId = startTransitionId;
   parameter.endTransitionId = endTransitionId;
   parameter.requirementText = requirementText;
-  parameter.parsedRequirement = parsedRequirement;
-  parameter.validationStatus = parsedRequirement ? 'parsed' : 'unparsed';
+  parameter.parsedRequirement = noteMetadata.parsedRequirement;
+  parameter.validationStatus = noteMetadata.validationStatus;
   if (updates.tags !== undefined) parameter.tags = [...updates.tags];
   return next;
 }

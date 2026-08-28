@@ -1,9 +1,11 @@
 const COMPARISON_PATTERN = /^(>=|<=|=)\s*(\d+(?:\.\d+)?)\s*(ps|ns|us|ms|s)$/i;
 const RANGE_PATTERN = /^(\d+(?:\.\d+)?)\s*(ps|ns|us|ms|s)\s*\.\.\s*(\d+(?:\.\d+)?)\s*\2$/i;
 
+export const REQUIREMENT_DSL_FORMAT = '>= 20 ns, <= 40 ns, = 25 ns, or 20 ns..40 ns.';
+
 export function parseRequirement(text) {
   if (typeof text !== 'string') return null;
-  const source = text.trim();
+  const source = text.trim().replaceAll('≥', '>=').replaceAll('≤', '<=');
   const comparison = source.match(COMPARISON_PATTERN);
   if (comparison) {
     return {

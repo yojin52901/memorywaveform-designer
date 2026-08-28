@@ -6,7 +6,6 @@ import {
   TIMELINE_END_ID,
   TIMELINE_START_ID
 } from './constants.js';
-import { parseRequirement } from './requirement.js';
 
 function markerSequence(document, markerId) {
   if (markerId === TIMELINE_START_ID) return Number.NEGATIVE_INFINITY;
@@ -142,12 +141,6 @@ function validateEndpointRelations(document, refs, errors) {
       errors.push(`${relation.name || relation.id} endpoints must be distinct and strictly left-to-right.`);
     }
   }
-  for (const parameter of document.semantic.timingParameters) {
-    const parsed = parseRequirement(parameter.requirementText);
-    if (!parsed || parameter.validationStatus !== 'parsed' || JSON.stringify(parsed) !== JSON.stringify(parameter.parsedRequirement)) {
-      errors.push(`Timing parameter ${parameter.name} needs a parsed requirement DSL value.`);
-    }
-  }
 }
 
 function validateAnnotationsAndPresentation(document, refs, errors) {
@@ -167,6 +160,7 @@ function validateAnnotationsAndPresentation(document, refs, errors) {
 
 export function validateDocument(document) {
   const errors = [];
+  const warnings = [];
   if (!document || typeof document !== 'object') return { valid: false, errors: ['Document must be an object.'], warnings: [] };
   if (document.schemaVersion !== SCHEMA_VERSION) errors.push(`Unsupported schema version: ${document.schemaVersion ?? '(missing)'}.`);
   if (!document.metadata?.title?.trim()) errors.push('Document metadata.title is required.');
@@ -199,5 +193,5 @@ export function validateDocument(document) {
   validateMarkersAndTransitions(document, refs, errors);
   validateEndpointRelations(document, refs, errors);
   validateAnnotationsAndPresentation(document, refs, errors);
-  return { valid: errors.length === 0, errors, warnings: [] };
+  return { valid: errors.length === 0, errors, warnings };
 }

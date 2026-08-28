@@ -12,3 +12,12 @@ test('parses comparison and range timing rules', () => {
   });
   assert.equal(parseRequirement('about twenty nanoseconds'), null);
 });
+
+test('parses the standard unicode comparison symbols engineers commonly use', () => {
+  assert.deepEqual(parseRequirement('≥20ns'), {
+    kind: 'comparison', operator: '>=', value: 20, unit: 'ns'
+  });
+  assert.deepEqual(parseRequirement('≤40 ns'), {
+    kind: 'comparison', operator: '<=', value: 40, unit: 'ns'
+  });
+});

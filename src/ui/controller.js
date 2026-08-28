@@ -22,6 +22,14 @@ import {
 import { exportDocumentJson, getPngExportPolicy, loadDocumentJson } from '../domain/import-export.js';
 import { validateDocument } from '../domain/validate.js';
 import { renderSvg, svgToPngBlob } from '../render/svg-renderer.js';
+import {
+  appendHistoryEntry,
+  createHistoryEntry,
+  loadHistory,
+  replaceActiveHistoryEntry,
+  saveHistory,
+  selectHistoryEntry
+} from './document-history.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -51,6 +59,14 @@ function downloadBlob(blob, filename) {
 
 function formValues(form) {
   return Object.fromEntries(new FormData(form).entries());
+}
+
+function browserStorage(root) {
+  try {
+    return root.defaultView?.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 function anchorOptions(documentModel, selectedAnchor = 'document:') {
@@ -124,9 +140,8 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
         <label>Name<input name="name" value="${escapeHtml(parameter.name)}" required /></label>
         <label>Start transition<select name="startTransitionId">${transitionOptions(documentModel, parameter.startTransitionId)}</select></label>
         <label>End transition<select name="endTransitionId">${transitionOptions(documentModel, parameter.endTransitionId)}</select></label>
-        <label>Requirement DSL<input name="requirementText" value="${escapeHtml(parameter.requirementText)}" required /></label>
+        <label>Requirement note (optional)<textarea name="requirementText">${escapeHtml(parameter.requirementText)}</textarea></label>
         <label>Tags<input name="tags" value="${escapeHtml((parameter.tags ?? []).join(', '))}" /></label>
-        <p class="muted">Rule status: ${escapeHtml(parameter.validationStatus)}</p>
         <button class="button secondary" type="submit">Save timing parameter</button>
       </form>
     </details>`).join('');
@@ -172,6 +187,68 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
     ${selected ? `<section class="selection-card"><h3>Edit selected transition</h3><code>${escapeHtml(selected.id)}</code><p>${escapeHtml(`${selected.fromState} → ${selected.toState}`)}</p><form class="tool-form" data-form="transition-edit"><input type="hidden" name="transitionId" value="${escapeHtml(selected.id)}" /><label>Signal<select name="signalId">${signalOptions}</select></label><label>Order slot<input name="sequence" type="number" step="1" value="${escapeHtml(selectedSequence)}" required /></label><label>State after transition<select name="rightState">${STATES.map((item) => option(item, item, selected.toState === item)).join('')}</select></label><button class="button secondary" type="submit">Save transition</button></form><p class="muted">Dependencies: ${dependencies.timingParameters.length} timing, ${dependencies.phases.length} phases</p><button id="delete-transition" class="button danger" type="button">Delete transition</button></section>` : '<p class="muted">Click a transition point to inspect, edit, or delete it.</p>'}`;
 }
 
+function historyDisclosureMarkup(history, activeHistoryId) {
+  const historyItems = [...history.entries].sort((a, b) => b.updatedAt - a.updatedAt).map((entry) => `
+    <button type="button" class="history-item${entry.id === activeHistoryId ? ' active' : ''}" data-history-id="${escapeHtml(entry.id)}">
+      <strong>${escapeHtml(entry.title)}</strong><span>${escapeHtml(new Date(entry.updatedAt).toLocaleString())}</span>
+    </button>`).join('');
+  return `<details class="history-disclosure"><summary>Document history <span>${history.entries.length}</span></summary><div class="history-list">${historyItems}</div></details>`;
+}
+
+export function renderPaletteMarkup({ documentModel, history, activeHistoryId }) {
+  const signals = documentModel.semantic.signals;
+  const transitionSelect = transitionOptions(documentModel);
+  const signalOptions = signals.map((signal) => option(signal.id, signal.name)).join('');
+  const tool = (title, form) => `<details class="tool-disclosure"><summary>${title}</summary>${form}</details>`;
+  return `
+    ${historyDisclosureMarkup(history, activeHistoryId)}
+    <h2>Authoring</h2>
+    ${tool('Add signal', `<form class="tool-form" data-form="signal">
+      <label>Name<input name="name" required placeholder="WE#" /></label>
+      <label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type)).join('')}</select></label>
+      <label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, item === 'LOW')).join('')}</select></label>
+      <label>Subtype<input name="subtype" placeholder="write-enable" /></label>
+      <label>Tags<input name="tags" placeholder="active-low, write" /></label>
+      <button class="button" type="submit">Add signal</button></form>`)}
+    ${tool('Add state transition', `<form class="tool-form" data-form="boundary">
+      <label>Signal<select name="signalId" ${signals.length ? '' : 'disabled'}>${signalOptions}</select></label>
+      <label>Order slot<input name="sequence" type="number" step="1" value="1" required /></label>
+      <label>State after transition<select name="rightState">${STATES.map((item) => option(item, item)).join('')}</select></label>
+      <button class="button" type="submit" ${signals.length ? '' : 'disabled'}>Add boundary</button></form>`)}
+    ${tool('Timing parameter', `<form class="tool-form" data-form="timing">
+      <label>Name<input name="name" value="tWP" required /></label>
+      <label>Start transition<select name="startTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
+      <label>End transition<select name="endTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
+      <label>Requirement note (optional)<textarea name="requirementText" placeholder="Datasheet note or timing requirement"></textarea></label>
+      <div class="form-actions"><button class="button" type="submit" ${transitionSelect ? '' : 'disabled'}>Add timing</button><button class="button secondary" type="button" data-pick-relation="timing" ${transitionSelect ? '' : 'disabled'}>Pick endpoints</button></div></form>`)}
+    ${tool('Phase', `<form class="tool-form" data-form="phase">
+      <label>Name<input name="name" value="Program" required /></label>
+      <label>Start transition<select name="startTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
+      <label>End transition<select name="endTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
+      <label>Tags<input name="tags" placeholder="program, write" /></label>
+      <div class="form-actions"><button class="button" type="submit" ${transitionSelect ? '' : 'disabled'}>Add phase</button><button class="button secondary" type="button" data-pick-relation="phase" ${transitionSelect ? '' : 'disabled'}>Pick endpoints</button></div></form>`)}
+    ${tool('Annotation', `<form class="tool-form" data-form="annotation">
+      <label>Anchor<select name="anchor">${anchorOptions(documentModel)}</select></label>
+      <label>Note<textarea name="text" required placeholder="Review note"></textarea></label>
+      <button class="button" type="submit">Add note</button></form>`)}`;
+}
+
+export function renderEditorMarkup(documentModel, { mode, validation, view = 'waveform', repairText = '' }) {
+  if (mode === 'repair') {
+    return `<section class="repair-mode"><h2>Repair imported JSON</h2><p>The waveform is intentionally not rendered until all validation errors are resolved.</p><textarea id="repair-json" spellcheck="false">${escapeHtml(repairText)}</textarea><button id="repair-apply" class="button" type="button">Validate and apply JSON</button></section>`;
+  }
+  const policy = getPngExportPolicy(documentModel);
+  const errors = validation?.errors ?? [];
+  const valid = Boolean(validation?.valid);
+  const activeView = valid && view === 'json' ? 'json' : 'waveform';
+  const switcher = valid ? `<div class="view-switcher" aria-label="Canvas view"><button type="button" data-editor-view="waveform" class="${activeView === 'waveform' ? 'active' : ''}">Waveform</button><button type="button" data-editor-view="json" class="${activeView === 'json' ? 'active' : ''}">JSON</button></div>` : '';
+  const validationSummary = policy.draft ? `<section class="validation-summary" role="alert"><h3>Why this waveform is invalid</h3><p>Fix these ${errors.length} issue${errors.length === 1 ? '' : 's'} before exporting JSON.</p><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol></section>` : '';
+  const content = activeView === 'json'
+    ? `<pre id="document-json-view">${escapeHtml(exportDocumentJson(documentModel))}</pre>`
+    : `<p id="drag-status" class="drag-status" aria-live="polite" hidden></p><div id="waveform-canvas">${renderSvg(documentModel, { draft: policy.draft })}</div>`;
+  return `<section class="canvas-header"><div><h2>${activeView === 'json' ? 'Current document JSON' : 'Waveform canvas'}</h2><p>${policy.draft ? `Draft rendering: ${errors.length} validation issue${errors.length === 1 ? '' : 's'} need attention before JSON export.` : 'Validated semantic projection.'}</p></div>${switcher}</section>${validationSummary}${content}`;
+}
+
 export function createEditor(root = document) {
   const palette = root.querySelector('#palette');
   const inspector = root.querySelector('#inspector');
@@ -181,16 +258,22 @@ export function createEditor(root = document) {
   const exportPngButton = root.querySelector('#export-png');
   const importInput = root.querySelector('#import-json');
   const newDocumentButton = root.querySelector('#new-document');
+  const initialDocument = createDocument({ title: 'Untitled waveform' });
+  const storage = browserStorage(root);
+  const initialHistory = loadHistory(storage, createHistoryEntry(initialDocument));
+  const initialSelection = selectHistoryEntry(initialHistory.history, initialHistory.history.activeId);
   const state = {
-    document: createDocument({ title: 'Untitled waveform' }),
+    document: initialSelection.snapshot,
+    history: initialSelection.history,
     mode: 'editor',
+    view: 'waveform',
     validation: null,
     selectedTransitionId: null,
     drag: null,
     relationCreation: null,
     repairSelection: null,
     repairText: '',
-    notice: ''
+    notice: initialHistory.notice
   };
 
   function setNotice(message = '') {
@@ -205,47 +288,10 @@ export function createEditor(root = document) {
 
   function renderPalette() {
     if (state.mode === 'repair') {
-      palette.innerHTML = `<h2>Repair mode</h2><p class="muted">Imported JSON is not safe to render. Correct it in the raw editor, then apply it again.</p>`;
+      palette.innerHTML = `${historyDisclosureMarkup(state.history, state.history.activeId)}<h2>Repair mode</h2><p class="muted">Imported JSON is not safe to render. Correct it in the raw editor, then apply it again.</p>`;
       return;
     }
-    const signals = state.document.semantic.signals;
-    const transitionSelect = transitionOptions(state.document);
-    const signalOptions = signals.map((signal) => option(signal.id, signal.name)).join('');
-    palette.innerHTML = `
-      <h2>Authoring</h2>
-      <form class="tool-form" data-form="signal"><h3>Add signal</h3>
-        <label>Name<input name="name" required placeholder="WE#" /></label>
-        <label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type)).join('')}</select></label>
-        <label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, item === 'LOW')).join('')}</select></label>
-        <label>Subtype<input name="subtype" placeholder="write-enable" /></label>
-        <label>Tags<input name="tags" placeholder="active-low, write" /></label>
-        <button class="button" type="submit">Add signal</button>
-      </form>
-      <form class="tool-form" data-form="boundary"><h3>Add state transition</h3>
-        <label>Signal<select name="signalId" ${signals.length ? '' : 'disabled'}>${signalOptions}</select></label>
-        <label>Order slot<input name="sequence" type="number" step="1" value="1" required /></label>
-        <label>State after transition<select name="rightState">${STATES.map((item) => option(item, item)).join('')}</select></label>
-        <button class="button" type="submit" ${signals.length ? '' : 'disabled'}>Add boundary</button>
-      </form>
-      <form class="tool-form" data-form="timing"><h3>Timing parameter</h3>
-        <label>Name<input name="name" value="tWP" required /></label>
-        <label>Start transition<select name="startTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
-        <label>End transition<select name="endTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
-        <label>Requirement DSL<input name="requirementText" value=">= 20 ns" required /></label>
-        <div class="form-actions"><button class="button" type="submit" ${transitionSelect ? '' : 'disabled'}>Add timing</button><button class="button secondary" type="button" data-pick-relation="timing" ${transitionSelect ? '' : 'disabled'}>Pick endpoints</button></div>
-      </form>
-      <form class="tool-form" data-form="phase"><h3>Phase</h3>
-        <label>Name<input name="name" value="Program" required /></label>
-        <label>Start transition<select name="startTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
-        <label>End transition<select name="endTransitionId" ${transitionSelect ? '' : 'disabled'}>${transitionSelect}</select></label>
-        <label>Tags<input name="tags" placeholder="program, write" /></label>
-        <div class="form-actions"><button class="button" type="submit" ${transitionSelect ? '' : 'disabled'}>Add phase</button><button class="button secondary" type="button" data-pick-relation="phase" ${transitionSelect ? '' : 'disabled'}>Pick endpoints</button></div>
-      </form>
-      <form class="tool-form" data-form="annotation"><h3>Annotation</h3>
-        <label>Anchor<select name="anchor">${anchorOptions(state.document)}</select></label>
-        <label>Note<textarea name="text" required placeholder="Review note"></textarea></label>
-        <button class="button" type="submit">Add note</button>
-      </form>`;
+    palette.innerHTML = renderPaletteMarkup({ documentModel: state.document, history: state.history, activeHistoryId: state.history.activeId });
   }
 
   function renderInspector() {
@@ -403,8 +449,8 @@ export function createEditor(root = document) {
   }
 
   function renderEditor() {
+    editor.innerHTML = renderEditorMarkup(state.document, { mode: state.mode, validation: state.validation, view: state.view, repairText: state.repairText });
     if (state.mode === 'repair') {
-      editor.innerHTML = `<section class="repair-mode"><h2>Repair imported JSON</h2><p>The waveform is intentionally not rendered until all validation errors are resolved.</p><textarea id="repair-json" spellcheck="false">${escapeHtml(state.repairText)}</textarea><button id="repair-apply" class="button" type="button">Validate and apply JSON</button></section>`;
       editor.querySelector('#repair-apply').addEventListener('click', () => {
         const text = editor.querySelector('#repair-json').value;
         const outcome = loadDocumentJson(text);
@@ -412,16 +458,23 @@ export function createEditor(root = document) {
         state.mode = outcome.mode;
         state.validation = outcome.validation;
         state.repairText = text;
+        state.view = 'waveform';
+        if (outcome.mode === 'editor') {
+          state.history = appendHistoryEntry(state.history, createHistoryEntry(state.document));
+          saveHistory(storage, state.history);
+        }
         setNotice(outcome.mode === 'editor' ? 'JSON repaired and rendered.' : 'JSON is still invalid.');
         render();
       });
       return;
     }
-    const policy = getPngExportPolicy(state.document);
-    const errors = state.validation?.errors ?? [];
-    const validationSummary = policy.draft ? `<section class="validation-summary" role="alert"><h3>Why this waveform is invalid</h3><p>Fix these ${errors.length} issue${errors.length === 1 ? '' : 's'} before exporting JSON.</p><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol></section>` : '';
-    editor.innerHTML = `<section class="canvas-header"><div><h2>Waveform canvas</h2><p>${policy.draft ? `Draft rendering: ${errors.length} validation issue${errors.length === 1 ? '' : 's'} need attention before JSON export.` : 'Validated semantic projection.'}</p></div><p class="drag-hint">Drag a transition or marker column to adjust sequence.</p></section>${validationSummary}<p id="drag-status" class="drag-status" aria-live="polite" hidden></p><div id="waveform-canvas">${renderSvg(state.document, { draft: policy.draft })}</div>`;
     bindCanvasEvents();
+  }
+
+  function persistActiveDocument() {
+    state.history = replaceActiveHistoryEntry(state.history, state.document);
+    const outcome = saveHistory(storage, state.history);
+    if (!outcome.saved) setNotice(outcome.notice);
   }
 
   function render() {
@@ -445,6 +498,7 @@ export function createEditor(root = document) {
     try {
       state.document = operation(state.document);
       refreshValidation();
+      persistActiveDocument();
       setNotice(state.validation.valid ? 'Change applied.' : 'Change applied; resolve validation errors before JSON export.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Unable to apply change.');
@@ -471,6 +525,20 @@ export function createEditor(root = document) {
     }
   });
   palette.addEventListener('click', (event) => {
+    const historyId = event.target.closest('[data-history-id]')?.dataset.historyId;
+    if (historyId) {
+      const selected = selectHistoryEntry(state.history, historyId);
+      state.history = selected.history;
+      state.document = selected.snapshot;
+      state.mode = 'editor';
+      state.view = 'waveform';
+      state.selectedTransitionId = null;
+      state.repairText = '';
+      saveHistory(storage, state.history);
+      setNotice(`Opened ${state.document.metadata.title}.`);
+      render();
+      return;
+    }
     const button = event.target.closest('[data-pick-relation]');
     if (!button) return;
     const form = button.closest('form');
@@ -480,6 +548,13 @@ export function createEditor(root = document) {
       firstTransitionId: null
     };
     setNotice(`Select the start transition for the ${button.dataset.pickRelation} relation.`);
+    render();
+  });
+
+  editor.addEventListener('click', (event) => {
+    const view = event.target.closest('[data-editor-view]')?.dataset.editorView;
+    if (!view || !state.validation?.valid || state.mode !== 'editor') return;
+    state.view = view;
     render();
   });
 
@@ -576,6 +651,10 @@ export function createEditor(root = document) {
   });
   exportPngButton.addEventListener('click', async () => {
     try {
+      if (state.view === 'json') {
+        state.view = 'waveform';
+        render();
+      }
       const svg = editor.querySelector('svg');
       downloadBlob(await svgToPngBlob(svg), 'waveform.png');
       setNotice(getPngExportPolicy(state.document).draft ? 'Draft PNG exported with watermark.' : 'PNG exported.');
@@ -592,15 +671,24 @@ export function createEditor(root = document) {
     state.mode = outcome.mode;
     state.validation = outcome.validation;
     state.repairText = text;
+    state.view = 'waveform';
     state.selectedTransitionId = null;
+    if (outcome.mode === 'editor') {
+      const entry = createHistoryEntry(state.document);
+      state.history = appendHistoryEntry(state.history, entry);
+      saveHistory(storage, state.history);
+    }
     setNotice(outcome.mode === 'editor' ? 'JSON imported.' : 'Imported JSON needs repair before rendering.');
     render();
     importInput.value = '';
   });
   newDocumentButton.addEventListener('click', () => {
-    if (!window.confirm('Start a new waveform document? Unsaved in-browser changes will be discarded.')) return;
+    if (!window.confirm('Start a new waveform document? The current document remains available in history.')) return;
     state.document = createDocument({ title: 'Untitled waveform' });
+    state.history = appendHistoryEntry(state.history, createHistoryEntry(state.document));
+    saveHistory(storage, state.history);
     state.mode = 'editor';
+    state.view = 'waveform';
     state.selectedTransitionId = null;
     setNotice('Created a new waveform document.');
     render();

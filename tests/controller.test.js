@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { renderInspectorMarkup, resolveDropTransitionId, sequenceFromPointer } from '../src/ui/controller.js';
+import { renderEditorMarkup, renderInspectorMarkup, renderPaletteMarkup, resolveDropTransitionId, sequenceFromPointer } from '../src/ui/controller.js';
 import { createDocument } from '../src/domain/document.js';
 import { addAnnotation, addPhase, addSignal, addTimingParameter, setSegmentBoundary } from '../src/domain/operations.js';
 
@@ -41,6 +41,51 @@ test('the inspector exposes every field used to create waveform objects', () => 
   assert.match(markup, /name="initialState"/);
   assert.match(markup, /data-form="transition-edit"[\s\S]*name="signalId"/);
   assert.match(markup, /data-form="timing-edit"[\s\S]*name="requirementText"/);
+  assert.doesNotMatch(markup, /name="requirementText"[^>]*required/);
+  assert.match(markup, /Requirement note \(optional\)/);
+  assert.doesNotMatch(markup, /Rule engine format|Rule status/);
   assert.match(markup, /data-form="phase-edit"[\s\S]*name="tags"/);
   assert.match(markup, /data-form="annotation-edit"[\s\S]*name="anchor"[\s\S]*name="text"/);
+});
+
+test('history and every authoring tool are independently collapsed by default', () => {
+  const document = createDocument({ title: 'Program' });
+  const history = {
+    activeId: 'doc-1',
+    entries: [{ id: 'doc-1', title: 'Program', updatedAt: 100, snapshot: document }]
+  };
+
+  const markup = renderPaletteMarkup({ documentModel: document, history, activeHistoryId: 'doc-1' });
+
+  assert.match(markup, /<details class="history-disclosure">/);
+  assert.doesNotMatch(markup, /<details class="history-disclosure" open/);
+  assert.equal((markup.match(/<details class="tool-disclosure">/g) ?? []).length, 5);
+  assert.doesNotMatch(markup, /<details class="tool-disclosure" open/);
+  assert.match(markup, /data-history-id="doc-1"/);
+});
+
+test('a valid document can switch between waveform and formatted current JSON', () => {
+  const document = createDocument({ title: 'Program' });
+  const validation = { valid: true, errors: [], warnings: [] };
+
+  const waveform = renderEditorMarkup(document, { mode: 'editor', validation, view: 'waveform' });
+  const json = renderEditorMarkup(document, { mode: 'editor', validation, view: 'json' });
+
+  assert.match(waveform, /data-editor-view="waveform"/);
+  assert.match(waveform, /id="waveform-canvas"/);
+  assert.match(json, /data-editor-view="json"/);
+  assert.match(json, /id="document-json-view"/);
+  assert.match(json, /&quot;title&quot;: &quot;Program&quot;/);
+  assert.doesNotMatch(json, /id="waveform-canvas"/);
+});
+
+test('invalid and repair modes never expose the JSON projection switch', () => {
+  const document = createDocument({ title: 'Program' });
+  const invalid = renderEditorMarkup(document, { mode: 'editor', validation: { valid: false, errors: ['Broken'], warnings: [] }, view: 'json' });
+  const repair = renderEditorMarkup(document, { mode: 'repair', validation: { valid: false, errors: ['Broken'], warnings: [] }, view: 'waveform', repairText: '{}' });
+
+  assert.doesNotMatch(invalid, /data-editor-view=/);
+  assert.match(invalid, /id="waveform-canvas"/);
+  assert.doesNotMatch(repair, /data-editor-view=|id="waveform-canvas"/);
+  assert.match(repair, /id="repair-json"/);
 });

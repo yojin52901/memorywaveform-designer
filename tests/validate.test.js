@@ -46,13 +46,33 @@ test('reports dangling references and incomplete signal coverage', () => {
   assert.match(result.errors.join('\n'), /missing|cover/i);
 });
 
-test('unparsed timing text remains editable but is not export-valid', () => {
+test('free-form timing notes never affect document validity', () => {
   const document = validWaveform();
-  document.semantic.timingParameters[0].requirementText = 'about twenty ns';
+  document.semantic.timingParameters[0].requirementText = 'tWP ≥ 20 ns; characterize at hot corner';
   document.semantic.timingParameters[0].validationStatus = 'unparsed';
-  document.semantic.timingParameters[0].parsedRequirement = null;
+  document.semantic.timingParameters[0].parsedRequirement = { stale: true };
 
-  assert.equal(validateDocument(document).valid, false);
+  const result = validateDocument(document);
+  assert.deepEqual(result, { valid: true, errors: [], warnings: [] });
+});
+
+test('allows timing endpoints without a requirement DSL', () => {
+  const document = validWaveform();
+  const parameter = document.semantic.timingParameters[0];
+  const updated = updateTimingParameter(document, parameter.id, { requirementText: '' });
+
+  assert.equal(updated.semantic.timingParameters[0].validationStatus, 'note');
+  assert.equal(updated.semantic.timingParameters[0].parsedRequirement, null);
+  assert.deepEqual(validateDocument(updated), { valid: true, errors: [], warnings: [] });
+});
+
+test('ignores legacy parsed requirement metadata', () => {
+  const document = validWaveform();
+  document.semantic.timingParameters[0].parsedRequirement = null;
+  document.semantic.timingParameters[0].validationStatus = 'unparsed';
+
+  const result = validateDocument(document);
+  assert.deepEqual(result, { valid: true, errors: [], warnings: [] });
 });
 
 test('rebinding a timing endpoint preserves the parameter identity', () => {

@@ -37,14 +37,15 @@ test('keeps invalid imported JSON in non-rendering repair mode', () => {
   assert.equal(imported.validation.errors.length > 0, true);
 });
 
-test('invalid authoring blocks JSON but permits only draft PNG', () => {
+test('a free-form timing note exports without validation messages', () => {
   const document = validDocument();
   document.semantic.timingParameters[0].requirementText = 'roughly twenty ns';
   document.semantic.timingParameters[0].parsedRequirement = null;
   document.semantic.timingParameters[0].validationStatus = 'unparsed';
 
-  assert.throws(() => exportDocumentJson(document), /valid waveform document/);
-  assert.deepEqual(getPngExportPolicy(document), { allowed: true, draft: true });
+  assert.doesNotThrow(() => exportDocumentJson(document));
+  assert.deepEqual(getPngExportPolicy(document), { allowed: true, draft: false });
+  assert.deepEqual(loadDocumentJson(exportDocumentJson(document)).validation, { valid: true, errors: [], warnings: [] });
 });
 
 test('malformed JSON enters repair mode without throwing', () => {

@@ -44,7 +44,7 @@ MVP 優先服務新建 waveform spec 與設計 review；不處理既有 PNG/PDF 
 10. 作為 memory designer，我想拖動單一 transition 到新 marker 或既有 marker，讓單一訊號能調整位置。
 11. 作為 memory designer，我想用拖拉或兩次點選，從一個 transition 指向另一個 transition 建立 timing parameter。
 12. 作為 memory designer，我想讓多個 timing parameter 共用 endpoint 且能重疊，讓複雜 timing relation 可被完整表達。
-13. 作為 memory designer，我想以文字輸入 `>= 20 ns` 或 `20 ns..40 ns` 等 timing rule，讓操作快速且可被 parser 驗證。
+13. 作為 memory designer，我想為 timing parameter 填寫自由格式註解，記錄 datasheet requirement 或工程備註，但不影響文件有效性。
 14. 作為 memory designer，我想建立由兩個 transition 定義的 phase，並允許 phase 巢狀或重疊，讓 operation context 可被標示。
 15. 作為 memory designer，我想將 annotation 錨定在文件、signal、transition、parameter 或 phase，讓 review 語境可與正確物件一起保存。
 16. 作為 memory designer，我想拖拉 state segment 的邊界時同步更新相鄰 segment 與 transition，避免資料矛盾。
@@ -94,7 +94,7 @@ Timing parameter 必須 reference 兩個不同 transition：`startTransitionId` 
 
 拖動 parameter 端點只會重新綁定其 start 或 end transition；絕不移動 signal、segment、marker 或其他 parameter。畫面 interval 與 arrow 由 endpoint marker sequence 推導。
 
-Timing rule 填入 `requirementText`。第一版 parser 支援單值比較 `>= 20 ns`、`<= 40 ns`、`= 25 ns`，以及 range `20 ns..40 ns`。名稱（如 `tWP`）不放入 DSL。解析成功時輸出 `parsedRequirement`；無法解析的文字仍可保存，但狀態為 `unparsed`，不可匯出為 rule-engine-ready JSON。
+Timing parameter 可填入選填的 `requirementText`，第一版將它視為純文字註解。內容可使用任意格式，不解析、不驗證，也不產生 warning 或 invalid；因此不會阻擋 waveform、PNG 或 JSON 匯出。為相容舊資料，匯入時可保留既有 `parsedRequirement`，但平台不使用它判斷有效性；新建或編輯後固定輸出 `parsedRequirement: null` 與 `validationStatus: "note"`。
 
 Phase 沒有 timing rule text，但同樣必須由兩個左到右的 transition endpoint 定義。Phase 可以重疊與巢狀，名稱與 tags 描述 operation context。
 
@@ -183,12 +183,8 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
         "startTransitionId": "tr_we_fall",
         "endTransitionId": "tr_we_rise",
         "requirementText": ">= 20 ns",
-        "parsedRequirement": {
-          "operator": ">=",
-          "value": 20,
-          "unit": "ns"
-        },
-        "validationStatus": "parsed"
+        "parsedRequirement": null,
+        "validationStatus": "note"
       }
     ],
     "phases": [
@@ -219,7 +215,7 @@ Validator 至少檢查：
 - transition 是否與相鄰 segment state 及 marker 一致；
 - marker 是否為固定 boundary 或至少包含一個 transition，且 sequence 唯一；
 - timing parameter 與 phase endpoint 是否存在、不同且嚴格由左至右；
-- `requirementText` 是否符合 DSL，或被明確標示為 `unparsed`；
+- timing parameter 的 endpoint reference 與順序是否合法；`requirementText` 僅為註解，不參與 validation；
 - annotation anchor 與 presentation reference 是否存在。
 
 刪除被 reference 的 transition 時，UI 必須列出所有相依 timing parameter 與 phase。Designer 可取消，或確認級聯刪除依賴物件；不得留下 dangling reference。
@@ -234,14 +230,14 @@ Validator 至少檢查：
 
 ### 模組與測試 seam
 
-最高且最穩定的 seam 是純 waveform document model。它負責 document mutation、segment-to-transition 推導、marker 重排、reference 維護、DSL parse 與 validation；DOM controller 只將互動轉為 model operation，renderer 只讀取 model。
+最高且最穩定的 seam 是純 waveform document model。它負責 document mutation、segment-to-transition 推導、marker 重排、reference 維護與 validation；DOM controller 只將互動轉為 model operation，renderer 只讀取 model。
 
 建議分離以下責任：
 
 - document factory 與 immutable ID generation；
 - signal、segment、marker、transition、timing parameter、phase、annotation 的純操作；
 - transition derivation 與 dependency/cascade analysis；
-- requirement DSL parser 與 validator；
+- timing requirement 自由格式註解與 endpoint validator；
 - SVG renderer 與 PNG exporter；
 - import loader、repair-mode controller；
 - palette、inspector、JSON preview 與 DOM interaction controller。
@@ -256,7 +252,7 @@ Validator 至少檢查：
 - 移動單一 transition 能拆出或合併 marker，且空 marker 被移除；
 - timing parameter 與 phase 僅能綁定存在、不同、且由左至右的 transition；
 - 多個 parameter 可共用 endpoint；刪除 endpoint 能精確列出與級聯刪除 dependency；
-- DSL parser 正確處理比較與 range，並將不支援文字標為 unparsed；
+- 任意 timing requirement 註解（包含空白或非 DSL 文字）都不影響文件有效性與匯出；
 - JSON 匯出包含語意資料且不需要 pixel；回匯後可得到相同 document；
 - invalid authoring document 阻擋 JSON、允許帶水印 PNG；invalid import 進 repair mode 且不 render；
 - valid document 生成的 SVG 與 PNG 對應同一 model snapshot。
