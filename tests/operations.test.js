@@ -12,6 +12,7 @@ import {
   moveSignalRow,
   moveTransition,
   setSegmentBoundary,
+  updateTransition,
   updateSignal
 } from '../src/domain/operations.js';
 import { addAnnotation, addTimingParameter } from '../src/domain/operations.js';
@@ -70,6 +71,22 @@ test('moving a transition can split a marker while preserving its ID', () => {
 
   assert.equal(moved.semantic.transitions.find((transition) => transition.id === transitionId).markerId !== 'tm_start', true);
   assert.deepEqual(getMarkerSequence(moved).map((marker) => marker.sequence), [20, 30]);
+});
+
+test('editing a transition updates its boundary and post-transition state while preserving its ID', () => {
+  const initial = setupSignal();
+  const signalId = initial.semantic.signals[0].id;
+  const withFirstTransition = setSegmentBoundary(initial, { signalId, sequence: 10, rightState: 'LOW' });
+  const waveform = setSegmentBoundary(withFirstTransition, { signalId, sequence: 30, rightState: 'HIGH' });
+  const transitionId = waveform.semantic.transitions[0].id;
+
+  const updated = updateTransition(waveform, transitionId, { sequence: 20, rightState: 'UNKNOWN' });
+  const transition = updated.semantic.transitions.find((item) => item.id === transitionId);
+
+  assert.equal(transition.markerId, updated.semantic.timeline.timeMarkers.find((marker) => marker.sequence === 20).id);
+  assert.equal(transition.fromState, 'HIGH');
+  assert.equal(transition.toState, 'UNKNOWN');
+  assert.equal(validateDocument(updated).valid, true);
 });
 
 test('moving a marker moves its complete synchronous transition group', () => {
