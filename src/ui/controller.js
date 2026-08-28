@@ -13,6 +13,7 @@ import {
   moveSignalRow,
   moveTransition,
   setSegmentBoundary,
+  updateAnnotation,
   updatePhase,
   updateSignal,
   updateTimingParameter,
@@ -52,12 +53,24 @@ function formValues(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
 
-function anchorOptions(documentModel) {
-  const options = [option('document:', 'Document')];
-  for (const signal of documentModel.semantic.signals) options.push(option(`signal:${signal.id}`, `Signal · ${signal.name}`));
-  for (const transition of documentModel.semantic.transitions) options.push(option(`transition:${transition.id}`, `Transition · ${transition.id}`));
-  for (const parameter of documentModel.semantic.timingParameters) options.push(option(`timingParameter:${parameter.id}`, `Timing · ${parameter.name}`));
-  for (const phase of documentModel.semantic.phases) options.push(option(`phase:${phase.id}`, `Phase · ${phase.name}`));
+function anchorOptions(documentModel, selectedAnchor = 'document:') {
+  const options = [option('document:', 'Document', selectedAnchor === 'document:')];
+  for (const signal of documentModel.semantic.signals) {
+    const value = `signal:${signal.id}`;
+    options.push(option(value, `Signal · ${signal.name}`, selectedAnchor === value));
+  }
+  for (const transition of documentModel.semantic.transitions) {
+    const value = `transition:${transition.id}`;
+    options.push(option(value, `Transition · ${transition.id}`, selectedAnchor === value));
+  }
+  for (const parameter of documentModel.semantic.timingParameters) {
+    const value = `timingParameter:${parameter.id}`;
+    options.push(option(value, `Timing · ${parameter.name}`, selectedAnchor === value));
+  }
+  for (const phase of documentModel.semantic.phases) {
+    const value = `phase:${phase.id}`;
+    options.push(option(value, `Phase · ${phase.name}`, selectedAnchor === value));
+  }
   return options.join('');
 }
 
@@ -88,6 +101,75 @@ function updateMetadata(documentModel, values) {
 
 export function resolveDropTransitionId(root, clientX, clientY) {
   return root.elementFromPoint(clientX, clientY)?.closest('[data-transition-id]')?.dataset.transitionId ?? null;
+}
+
+export function sequenceFromPointer(svg, event) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox.baseVal;
+  const x = ((event.clientX - rect.left) / rect.width) * viewBox.width;
+  return Math.round((x - 170) / 150);
+}
+
+export function renderInspectorMarkup(documentModel, selectedTransitionId = null) {
+  const selected = documentModel.semantic.transitions.find((transition) => transition.id === selectedTransitionId);
+  const dependencies = selected ? getTransitionDependencies(documentModel, selected.id) : null;
+  const markersById = new Map(documentModel.semantic.timeline.timeMarkers.map((marker) => [marker.id, marker]));
+  const selectedSequence = selected ? markersById.get(selected.markerId)?.sequence : null;
+  const signalOptions = documentModel.semantic.signals.map((signal) => option(signal.id, signal.name, signal.id === selected?.signalId)).join('');
+  const timingEditors = documentModel.semantic.timingParameters.map((parameter) => `
+    <details class="relation-editor">
+      <summary>${escapeHtml(parameter.name)} · timing parameter</summary>
+      <form class="tool-form" data-form="timing-edit">
+        <input type="hidden" name="parameterId" value="${escapeHtml(parameter.id)}" />
+        <label>Name<input name="name" value="${escapeHtml(parameter.name)}" required /></label>
+        <label>Start transition<select name="startTransitionId">${transitionOptions(documentModel, parameter.startTransitionId)}</select></label>
+        <label>End transition<select name="endTransitionId">${transitionOptions(documentModel, parameter.endTransitionId)}</select></label>
+        <label>Requirement DSL<input name="requirementText" value="${escapeHtml(parameter.requirementText)}" required /></label>
+        <label>Tags<input name="tags" value="${escapeHtml((parameter.tags ?? []).join(', '))}" /></label>
+        <p class="muted">Rule status: ${escapeHtml(parameter.validationStatus)}</p>
+        <button class="button secondary" type="submit">Save timing parameter</button>
+      </form>
+    </details>`).join('');
+  const phaseEditors = documentModel.semantic.phases.map((phase) => `
+    <details class="relation-editor">
+      <summary>${escapeHtml(phase.name)} · phase</summary>
+      <form class="tool-form" data-form="phase-edit">
+        <input type="hidden" name="phaseId" value="${escapeHtml(phase.id)}" />
+        <label>Name<input name="name" value="${escapeHtml(phase.name)}" required /></label>
+        <label>Start transition<select name="startTransitionId">${transitionOptions(documentModel, phase.startTransitionId)}</select></label>
+        <label>End transition<select name="endTransitionId">${transitionOptions(documentModel, phase.endTransitionId)}</select></label>
+        <label>Tags<input name="tags" value="${escapeHtml((phase.tags ?? []).join(', '))}" /></label>
+        <button class="button secondary" type="submit">Save phase</button>
+      </form>
+    </details>`).join('');
+  const annotationEditors = documentModel.semantic.annotations.map((annotation) => {
+    const selectedAnchor = annotation.anchorType === 'document' ? 'document:' : `${annotation.anchorType}:${annotation.anchorId}`;
+    return `
+      <details class="relation-editor">
+        <summary>Annotation · ${escapeHtml(annotation.text)}</summary>
+        <form class="tool-form" data-form="annotation-edit">
+          <input type="hidden" name="annotationId" value="${escapeHtml(annotation.id)}" />
+          <label>Anchor<select name="anchor">${anchorOptions(documentModel, selectedAnchor)}</select></label>
+          <label>Note<textarea name="text" required>${escapeHtml(annotation.text)}</textarea></label>
+          <button class="button secondary" type="submit">Save annotation</button>
+        </form>
+      </details>`;
+  }).join('');
+  return `
+    <h2>Document</h2>
+    <form class="tool-form" data-form="metadata">
+      <label>Title<input name="title" value="${escapeHtml(documentModel.metadata.title)}" required /></label>
+      <label>Operation<input name="operation" value="${escapeHtml(documentModel.metadata.operation)}" /></label>
+      <label>Description<textarea name="description">${escapeHtml(documentModel.metadata.description)}</textarea></label>
+      <label>Memory technology<input name="memoryTechnology" value="${escapeHtml(documentModel.metadata.memoryTechnology)}" /></label>
+      <label>Tags<input name="tags" value="${escapeHtml(documentModel.metadata.tags.join(', '))}" /></label>
+      <button class="button secondary" type="submit">Save metadata</button>
+    </form>
+    <h3>Signals</h3><div class="signal-editor-list">${documentModel.semantic.signals.map((signal, index) => `<form class="signal-editor" data-form="signal-edit"><input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" /><label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label><label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label><label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, signal.initialState === item)).join('')}</select></label><label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label><label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label><div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === documentModel.semantic.signals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div></form>`).join('') || '<p class="muted">No signals yet.</p>'}</div>
+    <h3>Timing parameters</h3><div class="relation-editor-list">${timingEditors || '<p class="muted">No timing parameters yet.</p>'}</div>
+    <h3>Phases</h3><div class="relation-editor-list">${phaseEditors || '<p class="muted">No phases yet.</p>'}</div>
+    <h3>Annotations</h3><div class="relation-editor-list">${annotationEditors || '<p class="muted">No annotations yet.</p>'}</div>
+    ${selected ? `<section class="selection-card"><h3>Edit selected transition</h3><code>${escapeHtml(selected.id)}</code><p>${escapeHtml(`${selected.fromState} → ${selected.toState}`)}</p><form class="tool-form" data-form="transition-edit"><input type="hidden" name="transitionId" value="${escapeHtml(selected.id)}" /><label>Signal<select name="signalId">${signalOptions}</select></label><label>Order slot<input name="sequence" type="number" step="1" value="${escapeHtml(selectedSequence)}" required /></label><label>State after transition<select name="rightState">${STATES.map((item) => option(item, item, selected.toState === item)).join('')}</select></label><button class="button secondary" type="submit">Save transition</button></form><p class="muted">Dependencies: ${dependencies.timingParameters.length} timing, ${dependencies.phases.length} phases</p><button id="delete-transition" class="button danger" type="button">Delete transition</button></section>` : '<p class="muted">Click a transition point to inspect, edit, or delete it.</p>'}`;
 }
 
 export function createEditor(root = document) {
@@ -141,7 +223,7 @@ export function createEditor(root = document) {
       </form>
       <form class="tool-form" data-form="boundary"><h3>Add state transition</h3>
         <label>Signal<select name="signalId" ${signals.length ? '' : 'disabled'}>${signalOptions}</select></label>
-        <label>Order slot<input name="sequence" type="number" step="1" value="10" required /></label>
+        <label>Order slot<input name="sequence" type="number" step="1" value="1" required /></label>
         <label>State after transition<select name="rightState">${STATES.map((item) => option(item, item)).join('')}</select></label>
         <button class="button" type="submit" ${signals.length ? '' : 'disabled'}>Add boundary</button>
       </form>
@@ -185,50 +267,7 @@ export function createEditor(root = document) {
       inspector.innerHTML = `<h2>Validation errors</h2><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol><h3>Objects received</h3><div class="repair-object-list">${repairObjects.map(([key]) => `<button type="button" class="button secondary" data-repair-object="${escapeHtml(key)}">${escapeHtml(key)}</button>`).join('') || '<p class="muted">No structured object could be parsed.</p>'}</div><h3>Selected properties</h3><pre class="repair-properties">${escapeHtml(JSON.stringify(selectedObject, null, 2))}</pre>`;
       return;
     }
-    const selected = state.document.semantic.transitions.find((transition) => transition.id === state.selectedTransitionId);
-    const dependencies = selected ? getTransitionDependencies(state.document, selected.id) : null;
-    const markersById = new Map(state.document.semantic.timeline.timeMarkers.map((marker) => [marker.id, marker]));
-    const selectedSequence = selected ? markersById.get(selected.markerId)?.sequence : null;
-    const timingEditors = state.document.semantic.timingParameters.map((parameter) => `
-      <details class="relation-editor">
-        <summary>${escapeHtml(parameter.name)} · timing parameter</summary>
-        <form class="tool-form" data-form="timing-edit">
-          <input type="hidden" name="parameterId" value="${escapeHtml(parameter.id)}" />
-          <label>Name<input name="name" value="${escapeHtml(parameter.name)}" required /></label>
-          <label>Start transition<select name="startTransitionId">${transitionOptions(state.document, parameter.startTransitionId)}</select></label>
-          <label>End transition<select name="endTransitionId">${transitionOptions(state.document, parameter.endTransitionId)}</select></label>
-          <label>Requirement DSL<input name="requirementText" value="${escapeHtml(parameter.requirementText)}" required /></label>
-          <label>Tags<input name="tags" value="${escapeHtml((parameter.tags ?? []).join(', '))}" /></label>
-          <p class="muted">Rule status: ${escapeHtml(parameter.validationStatus)}</p>
-          <button class="button secondary" type="submit">Save timing parameter</button>
-        </form>
-      </details>`).join('');
-    const phaseEditors = state.document.semantic.phases.map((phase) => `
-      <details class="relation-editor">
-        <summary>${escapeHtml(phase.name)} · phase</summary>
-        <form class="tool-form" data-form="phase-edit">
-          <input type="hidden" name="phaseId" value="${escapeHtml(phase.id)}" />
-          <label>Name<input name="name" value="${escapeHtml(phase.name)}" required /></label>
-          <label>Start transition<select name="startTransitionId">${transitionOptions(state.document, phase.startTransitionId)}</select></label>
-          <label>End transition<select name="endTransitionId">${transitionOptions(state.document, phase.endTransitionId)}</select></label>
-          <label>Tags<input name="tags" value="${escapeHtml((phase.tags ?? []).join(', '))}" /></label>
-          <button class="button secondary" type="submit">Save phase</button>
-        </form>
-      </details>`).join('');
-    inspector.innerHTML = `
-      <h2>Document</h2>
-      <form class="tool-form" data-form="metadata">
-        <label>Title<input name="title" value="${escapeHtml(state.document.metadata.title)}" required /></label>
-        <label>Operation<input name="operation" value="${escapeHtml(state.document.metadata.operation)}" /></label>
-        <label>Description<textarea name="description">${escapeHtml(state.document.metadata.description)}</textarea></label>
-        <label>Memory technology<input name="memoryTechnology" value="${escapeHtml(state.document.metadata.memoryTechnology)}" /></label>
-        <label>Tags<input name="tags" value="${escapeHtml(state.document.metadata.tags.join(', '))}" /></label>
-        <button class="button secondary" type="submit">Save metadata</button>
-      </form>
-      <h3>Signals</h3><div class="signal-editor-list">${state.document.semantic.signals.map((signal, index) => `<form class="signal-editor" data-form="signal-edit"><input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" /><label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label><label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label><label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label><label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label><p class="muted">Initial: ${escapeHtml(signal.initialState)}</p><div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === state.document.semantic.signals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div></form>`).join('') || '<p class="muted">No signals yet.</p>'}</div>
-      <h3>Timing parameters</h3><div class="relation-editor-list">${timingEditors || '<p class="muted">No timing parameters yet.</p>'}</div>
-      <h3>Phases</h3><div class="relation-editor-list">${phaseEditors || '<p class="muted">No phases yet.</p>'}</div>
-      ${selected ? `<section class="selection-card"><h3>Edit selected transition</h3><code>${escapeHtml(selected.id)}</code><p>${escapeHtml(`${selected.fromState} → ${selected.toState}`)}</p><form class="tool-form" data-form="transition-edit"><input type="hidden" name="transitionId" value="${escapeHtml(selected.id)}" /><label>Order slot<input name="sequence" type="number" step="1" value="${escapeHtml(selectedSequence)}" required /></label><label>State after transition<select name="rightState">${STATES.map((item) => option(item, item, selected.toState === item)).join('')}</select></label><button class="button secondary" type="submit">Save transition</button></form><p class="muted">Dependencies: ${dependencies.timingParameters.length} timing, ${dependencies.phases.length} phases</p><button id="delete-transition" class="button danger" type="button">Delete transition</button></section>` : '<p class="muted">Click a transition point to inspect, edit, or delete it.</p>'}`;
+    inspector.innerHTML = renderInspectorMarkup(state.document, state.selectedTransitionId);
   }
 
   function dragMessage(drag, targetSequence = null) {
@@ -363,13 +402,6 @@ export function createEditor(root = document) {
     svg.addEventListener('dragstart', (event) => event.preventDefault());
   }
 
-  function sequenceFromPointer(svg, event) {
-    const rect = svg.getBoundingClientRect();
-    const viewBox = svg.viewBox.baseVal;
-    const x = ((event.clientX - rect.left) / rect.width) * viewBox.width;
-    return Math.round((x - 170) / 150) * 10;
-  }
-
   function renderEditor() {
     if (state.mode === 'repair') {
       editor.innerHTML = `<section class="repair-mode"><h2>Repair imported JSON</h2><p>The waveform is intentionally not rendered until all validation errors are resolved.</p><textarea id="repair-json" spellcheck="false">${escapeHtml(state.repairText)}</textarea><button id="repair-apply" class="button" type="button">Validate and apply JSON</button></section>`;
@@ -462,11 +494,13 @@ export function createEditor(root = document) {
       applyOperation((documentModel) => updateSignal(documentModel, values.signalId, {
         name: values.name,
         type: values.type,
+        initialState: values.initialState,
         subtype: values.subtype,
         tags: tagsFrom(values.tags)
       }));
     } else if (form.dataset.form === 'transition-edit') {
       applyOperation((documentModel) => updateTransition(documentModel, values.transitionId, {
+        signalId: values.signalId,
         sequence: Number(values.sequence),
         rightState: values.rightState
       }));
@@ -484,6 +518,13 @@ export function createEditor(root = document) {
         startTransitionId: values.startTransitionId,
         endTransitionId: values.endTransitionId,
         tags: tagsFrom(values.tags)
+      }));
+    } else if (form.dataset.form === 'annotation-edit') {
+      const [anchorType, anchorId] = values.anchor.split(':');
+      applyOperation((documentModel) => updateAnnotation(documentModel, values.annotationId, {
+        text: values.text,
+        anchorType,
+        anchorId: anchorId || null
       }));
     }
   });
