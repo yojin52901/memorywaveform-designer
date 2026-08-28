@@ -38,7 +38,17 @@ textarea { min-height: 62px; resize: vertical; }
 .canvas-header p { color: #67758a; font-size: .8rem; margin: 4px 0 0; }
 .drag-hint { text-align: right; }
 #waveform-canvas { overflow: auto; }
-#waveform-canvas svg { background: #fff; display: block; min-width: 100%; }
+#waveform-canvas, #waveform-canvas * { -webkit-user-select: none; user-select: none; }
+#waveform-canvas svg { background: #fff; display: block; min-width: 100%; touch-action: none; }
+#waveform-canvas.is-dragging, #waveform-canvas.is-dragging * { cursor: grabbing !important; }
+.waveform-dragging, .waveform-dragging * { -webkit-user-select: none; user-select: none; }
+.transition-target.is-dragging { fill: #ffd98b; stroke: #a35800; stroke-width: 4; }
+.marker-column.is-dragging line { stroke: #a35800; stroke-dasharray: none; stroke-width: 4; }
+.relation-endpoint.is-dragging { fill: #ffd98b; stroke: #a35800; stroke-width: 4; }
+.drag-status { background: #fff7e2; border: 1px solid #e5b459; border-radius: 8px; color: #704100; font-size: .82rem; font-weight: 700; margin: 0 0 12px; padding: 9px 11px; }
+.validation-summary { background: #fff0da; border: 1px solid #edbd75; border-radius: 9px; margin: 0 0 12px; padding: 12px; }
+.validation-summary h3, .validation-summary p { margin: 0 0 7px; }
+.validation-summary h3 { color: #8b4a00; font-size: .9rem; }
 .object-list, .error-list { display: grid; gap: 8px; margin: 0; padding-left: 18px; }
 .object-list li { color: #45536a; display: grid; font-size: .82rem; gap: 2px; }
 .object-list span { color: #738198; }
@@ -50,6 +60,10 @@ textarea { min-height: 62px; resize: vertical; }
 .signal-editor { background: #f7f9fc; border: 1px solid #dfe7f1; border-radius: 8px; display: grid; gap: 7px; padding: 10px; }
 .signal-editor .muted { margin: 0; }
 .signal-editor-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.relation-editor-list { display: grid; gap: 8px; }
+.relation-editor { background: #f7f9fc; border: 1px solid #dfe7f1; border-radius: 8px; padding: 0 10px; }
+.relation-editor summary { color: #30445f; cursor: pointer; font-size: .84rem; font-weight: 700; padding: 11px 0; }
+.relation-editor[open] summary { border-bottom: 1px solid #dfe7f1; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .repair-object-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .repair-properties { background: #101724; border-radius: 8px; color: #d9e6fb; font-size: .72rem; margin: 0; max-height: 260px; overflow: auto; padding: 10px; white-space: pre-wrap; }
