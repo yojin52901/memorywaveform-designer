@@ -1,4 +1,4 @@
-import { SIGNAL_TYPES, STATES } from './constants.js';
+import { ANNOTATION_ANCHOR_TYPES, SIGNAL_TYPES, STATES } from './constants.js';
 import { cloneDocument, createId, getSignal } from './document.js';
 import { parseRequirement } from './requirement.js';
 
@@ -111,7 +111,7 @@ export function addSignal(document, {
   return next;
 }
 
-export function updateSignal(document, signalId, { name, type, subtype, tags }) {
+export function updateSignal(document, signalId, { name, type, subtype, tags, initialState }) {
   const next = cloneDocument(document);
   const signal = next.semantic.signals.find((item) => item.id === signalId);
   if (!signal) throw new Error('Signal does not exist.');
@@ -123,6 +123,19 @@ export function updateSignal(document, signalId, { name, type, subtype, tags }) 
   if (type !== undefined) signal.type = type;
   if (subtype !== undefined) signal.subtype = subtype;
   if (tags !== undefined) signal.tags = [...tags];
+  if (initialState !== undefined) {
+    if (!STATES.includes(initialState)) throw new Error(`Unsupported signal state: ${initialState}`);
+    const segments = orderedSegments(next, signalId);
+    const first = segments[0];
+    const following = segments[1];
+    if (!first) throw new Error('Signal has no state segment.');
+    if (following?.state === initialState) {
+      throw new Error('Initial state cannot match the next state segment. Change or remove that transition first.');
+    }
+    signal.initialState = initialState;
+    first.state = initialState;
+    rederiveSignalTransitions(next, signalId);
+  }
   return next;
 }
 
@@ -245,34 +258,73 @@ export function moveTransition(document, { transitionId, targetSequence }) {
   return next;
 }
 
-export function updateTransition(document, transitionId, { sequence, rightState } = {}) {
+export function updateTransition(document, transitionId, { signalId, sequence, rightState } = {}) {
   const source = document.semantic.transitions.find((transition) => transition.id === transitionId);
   if (!source) throw new Error('Transition does not exist.');
 
   const currentSequence = markerSequence(document, source.markerId);
   const targetSequence = sequence === undefined ? currentSequence : Number(sequence);
   if (!Number.isInteger(targetSequence)) throw new Error('Marker sequence must be an integer.');
+  const targetSignalId = signalId ?? source.signalId;
+  if (!getSignal(document, targetSignalId)) throw new Error('Signal does not exist.');
+  const targetRightState = rightState ?? source.toState;
+  if (!STATES.includes(targetRightState)) throw new Error(`Unsupported signal state: ${targetRightState}`);
+
+  if (targetSignalId !== source.signalId) {
+    const next = cloneDocument(document);
+    const transition = next.semantic.transitions.find((item) => item.id === transitionId);
+    const { left, right } = segmentPairForTransition(next, transition);
+    left.endMarkerId = right.endMarkerId;
+    next.semantic.stateSegments = next.semantic.stateSegments.filter((segment) => segment.id !== right.id);
+    coalesceSignalSegments(next, transition.signalId);
+    rederiveSignalTransitions(next, transition.signalId);
+
+    const targetSegments = orderedSegments(next, targetSignalId);
+    const target = targetSegments.find((segment) => {
+      const start = markerSequence(next, segment.startMarkerId);
+      const end = markerSequence(next, segment.endMarkerId);
+      return start < targetSequence && targetSequence < end;
+    });
+    if (!target) throw new Error('A transition must fall inside one target signal segment.');
+    if (target.state === targetRightState) throw new Error('A transition must change the target signal state.');
+    const targetIndex = targetSegments.findIndex((segment) => segment.id === target.id);
+    if (targetSegments[targetIndex + 1]?.state === targetRightState) {
+      throw new Error('State after a transition cannot merge with the following state segment.');
+    }
+
+    const marker = ensureMarker(next, targetSequence);
+    const rightTargetSegment = {
+      id: createId('seg'),
+      signalId: targetSignalId,
+      startMarkerId: marker.id,
+      endMarkerId: target.endMarkerId,
+      state: targetRightState
+    };
+    target.endMarkerId = marker.id;
+    const insertionIndex = next.semantic.stateSegments.findIndex((segment) => segment.id === target.id);
+    next.semantic.stateSegments.splice(insertionIndex + 1, 0, rightTargetSegment);
+    rederiveSignalTransitions(next, targetSignalId, new Map([[marker.id, transitionId]]));
+    return next;
+  }
 
   let next = targetSequence === currentSequence
     ? cloneDocument(document)
     : moveTransition(document, { transitionId, targetSequence });
-  if (rightState === undefined) return next;
-  if (!STATES.includes(rightState)) throw new Error(`Unsupported signal state: ${rightState}`);
 
   const transition = next.semantic.transitions.find((item) => item.id === transitionId);
   const { left, right } = segmentPairForTransition(next, transition);
-  if (left.state === rightState) {
+  if (left.state === targetRightState) {
     throw new Error('State after a transition must differ from its previous state.');
   }
 
   const segments = orderedSegments(next, transition.signalId);
   const rightIndex = segments.findIndex((segment) => segment.id === right.id);
   const following = segments[rightIndex + 1];
-  if (following?.state === rightState) {
+  if (following?.state === targetRightState) {
     throw new Error('State after a transition cannot merge with the following state segment.');
   }
 
-  right.state = rightState;
+  right.state = targetRightState;
   rederiveSignalTransitions(next, transition.signalId, new Map([[transition.markerId, transitionId]]));
   return next;
 }
@@ -447,10 +499,41 @@ export function updatePhase(document, phaseId, updates) {
   return next;
 }
 
+function assertAnnotationAnchor(document, anchorType, anchorId) {
+  if (!ANNOTATION_ANCHOR_TYPES.includes(anchorType)) throw new Error(`Unsupported annotation anchor type: ${anchorType}`);
+  if (anchorType === 'document') return;
+  const collectionByAnchorType = {
+    signal: document.semantic.signals,
+    transition: document.semantic.transitions,
+    timingParameter: document.semantic.timingParameters,
+    phase: document.semantic.phases
+  };
+  if (!collectionByAnchorType[anchorType].some((item) => item.id === anchorId)) {
+    throw new Error('Annotation anchor must reference an existing object.');
+  }
+}
+
 export function addAnnotation(document, { text, anchorType = 'document', anchorId = null }) {
   if (!text?.trim()) throw new Error('Annotation text is required.');
+  assertAnnotationAnchor(document, anchorType, anchorId);
   const next = cloneDocument(document);
   const annotation = { id: createId('note'), text: text.trim(), anchorType, anchorId };
   next.semantic.annotations.push(annotation);
+  return next;
+}
+
+export function updateAnnotation(document, annotationId, { text, anchorType, anchorId } = {}) {
+  const current = document.semantic.annotations.find((annotation) => annotation.id === annotationId);
+  if (!current) throw new Error('Annotation does not exist.');
+  const nextText = text === undefined ? current.text : text.trim();
+  if (!nextText) throw new Error('Annotation text is required.');
+  const nextAnchorType = anchorType ?? current.anchorType;
+  const nextAnchorId = nextAnchorType === 'document' ? null : anchorId ?? current.anchorId;
+  assertAnnotationAnchor(document, nextAnchorType, nextAnchorId);
+  const next = cloneDocument(document);
+  const annotation = next.semantic.annotations.find((item) => item.id === annotationId);
+  annotation.text = nextText;
+  annotation.anchorType = nextAnchorType;
+  annotation.anchorId = nextAnchorId;
   return next;
 }
