@@ -245,6 +245,38 @@ export function moveTransition(document, { transitionId, targetSequence }) {
   return next;
 }
 
+export function updateTransition(document, transitionId, { sequence, rightState } = {}) {
+  const source = document.semantic.transitions.find((transition) => transition.id === transitionId);
+  if (!source) throw new Error('Transition does not exist.');
+
+  const currentSequence = markerSequence(document, source.markerId);
+  const targetSequence = sequence === undefined ? currentSequence : Number(sequence);
+  if (!Number.isInteger(targetSequence)) throw new Error('Marker sequence must be an integer.');
+
+  let next = targetSequence === currentSequence
+    ? cloneDocument(document)
+    : moveTransition(document, { transitionId, targetSequence });
+  if (rightState === undefined) return next;
+  if (!STATES.includes(rightState)) throw new Error(`Unsupported signal state: ${rightState}`);
+
+  const transition = next.semantic.transitions.find((item) => item.id === transitionId);
+  const { left, right } = segmentPairForTransition(next, transition);
+  if (left.state === rightState) {
+    throw new Error('State after a transition must differ from its previous state.');
+  }
+
+  const segments = orderedSegments(next, transition.signalId);
+  const rightIndex = segments.findIndex((segment) => segment.id === right.id);
+  const following = segments[rightIndex + 1];
+  if (following?.state === rightState) {
+    throw new Error('State after a transition cannot merge with the following state segment.');
+  }
+
+  right.state = rightState;
+  rederiveSignalTransitions(next, transition.signalId, new Map([[transition.markerId, transitionId]]));
+  return next;
+}
+
 export function moveMarker(document, { markerId, targetSequence }) {
   const sourceMarker = document.semantic.timeline.timeMarkers.find((marker) => marker.id === markerId);
   if (!sourceMarker) throw new Error('Marker does not exist.');
@@ -369,6 +401,7 @@ export function addTimingParameter(document, {
 export function updateTimingParameter(document, parameterId, updates) {
   const current = document.semantic.timingParameters.find((item) => item.id === parameterId);
   if (!current) throw new Error('Timing parameter does not exist.');
+  if (updates.name !== undefined && !updates.name.trim()) throw new Error('Timing parameter name is required.');
   const startTransitionId = updates.startTransitionId ?? current.startTransitionId;
   const endTransitionId = updates.endTransitionId ?? current.endTransitionId;
   assertOrderedEndpoints(document, startTransitionId, endTransitionId);
