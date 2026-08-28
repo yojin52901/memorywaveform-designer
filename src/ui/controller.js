@@ -15,7 +15,8 @@ import {
   setSegmentBoundary,
   updatePhase,
   updateSignal,
-  updateTimingParameter
+  updateTimingParameter,
+  updateTransition
 } from '../domain/operations.js';
 import { exportDocumentJson, getPngExportPolicy, loadDocumentJson } from '../domain/import-export.js';
 import { validateDocument } from '../domain/validate.js';
@@ -60,14 +61,14 @@ function anchorOptions(documentModel) {
   return options.join('');
 }
 
-function transitionOptions(documentModel) {
+function transitionOptions(documentModel, selectedId = null) {
   const markerById = new Map(documentModel.semantic.timeline.timeMarkers.map((marker) => [marker.id, marker]));
   return [...documentModel.semantic.transitions]
     .sort((left, right) => markerById.get(left.markerId).sequence - markerById.get(right.markerId).sequence)
     .map((transition) => {
       const signal = documentModel.semantic.signals.find((item) => item.id === transition.signalId);
       const marker = markerById.get(transition.markerId);
-      return option(transition.id, `#${marker.sequence} · ${signal?.name ?? transition.signalId} ${transition.fromState}→${transition.toState}`);
+      return option(transition.id, `#${marker.sequence} · ${signal?.name ?? transition.signalId} ${transition.fromState}→${transition.toState}`, transition.id === selectedId);
     }).join('');
 }
 
@@ -186,6 +187,34 @@ export function createEditor(root = document) {
     }
     const selected = state.document.semantic.transitions.find((transition) => transition.id === state.selectedTransitionId);
     const dependencies = selected ? getTransitionDependencies(state.document, selected.id) : null;
+    const markersById = new Map(state.document.semantic.timeline.timeMarkers.map((marker) => [marker.id, marker]));
+    const selectedSequence = selected ? markersById.get(selected.markerId)?.sequence : null;
+    const timingEditors = state.document.semantic.timingParameters.map((parameter) => `
+      <details class="relation-editor">
+        <summary>${escapeHtml(parameter.name)} · timing parameter</summary>
+        <form class="tool-form" data-form="timing-edit">
+          <input type="hidden" name="parameterId" value="${escapeHtml(parameter.id)}" />
+          <label>Name<input name="name" value="${escapeHtml(parameter.name)}" required /></label>
+          <label>Start transition<select name="startTransitionId">${transitionOptions(state.document, parameter.startTransitionId)}</select></label>
+          <label>End transition<select name="endTransitionId">${transitionOptions(state.document, parameter.endTransitionId)}</select></label>
+          <label>Requirement DSL<input name="requirementText" value="${escapeHtml(parameter.requirementText)}" required /></label>
+          <label>Tags<input name="tags" value="${escapeHtml((parameter.tags ?? []).join(', '))}" /></label>
+          <p class="muted">Rule status: ${escapeHtml(parameter.validationStatus)}</p>
+          <button class="button secondary" type="submit">Save timing parameter</button>
+        </form>
+      </details>`).join('');
+    const phaseEditors = state.document.semantic.phases.map((phase) => `
+      <details class="relation-editor">
+        <summary>${escapeHtml(phase.name)} · phase</summary>
+        <form class="tool-form" data-form="phase-edit">
+          <input type="hidden" name="phaseId" value="${escapeHtml(phase.id)}" />
+          <label>Name<input name="name" value="${escapeHtml(phase.name)}" required /></label>
+          <label>Start transition<select name="startTransitionId">${transitionOptions(state.document, phase.startTransitionId)}</select></label>
+          <label>End transition<select name="endTransitionId">${transitionOptions(state.document, phase.endTransitionId)}</select></label>
+          <label>Tags<input name="tags" value="${escapeHtml((phase.tags ?? []).join(', '))}" /></label>
+          <button class="button secondary" type="submit">Save phase</button>
+        </form>
+      </details>`).join('');
     inspector.innerHTML = `
       <h2>Document</h2>
       <form class="tool-form" data-form="metadata">
@@ -197,7 +226,50 @@ export function createEditor(root = document) {
         <button class="button secondary" type="submit">Save metadata</button>
       </form>
       <h3>Signals</h3><div class="signal-editor-list">${state.document.semantic.signals.map((signal, index) => `<form class="signal-editor" data-form="signal-edit"><input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" /><label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label><label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label><label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label><label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label><p class="muted">Initial: ${escapeHtml(signal.initialState)}</p><div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === state.document.semantic.signals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div></form>`).join('') || '<p class="muted">No signals yet.</p>'}</div>
-      ${selected ? `<section class="selection-card"><h3>Selected transition</h3><code>${escapeHtml(selected.id)}</code><p>${escapeHtml(`${selected.fromState} → ${selected.toState}`)}</p><p class="muted">Dependencies: ${dependencies.timingParameters.length} timing, ${dependencies.phases.length} phases</p><button id="delete-transition" class="button danger" type="button">Delete transition</button></section>` : '<p class="muted">Click a transition point to inspect or delete it.</p>'}`;
+      <h3>Timing parameters</h3><div class="relation-editor-list">${timingEditors || '<p class="muted">No timing parameters yet.</p>'}</div>
+      <h3>Phases</h3><div class="relation-editor-list">${phaseEditors || '<p class="muted">No phases yet.</p>'}</div>
+      ${selected ? `<section class="selection-card"><h3>Edit selected transition</h3><code>${escapeHtml(selected.id)}</code><p>${escapeHtml(`${selected.fromState} → ${selected.toState}`)}</p><form class="tool-form" data-form="transition-edit"><input type="hidden" name="transitionId" value="${escapeHtml(selected.id)}" /><label>Order slot<input name="sequence" type="number" step="1" value="${escapeHtml(selectedSequence)}" required /></label><label>State after transition<select name="rightState">${STATES.map((item) => option(item, item, selected.toState === item)).join('')}</select></label><button class="button secondary" type="submit">Save transition</button></form><p class="muted">Dependencies: ${dependencies.timingParameters.length} timing, ${dependencies.phases.length} phases</p><button id="delete-transition" class="button danger" type="button">Delete transition</button></section>` : '<p class="muted">Click a transition point to inspect, edit, or delete it.</p>'}`;
+  }
+
+  function dragMessage(drag, targetSequence = null) {
+    const suffix = targetSequence === null ? 'Release to place it.' : `Target order slot: #${targetSequence}.`;
+    if (drag.kind === 'transition') {
+      const transition = state.document.semantic.transitions.find((item) => item.id === drag.id);
+      const signal = state.document.semantic.signals.find((item) => item.id === transition?.signalId);
+      return `Moving transition · ${signal?.name ?? transition?.signalId ?? drag.id}. ${suffix}`;
+    }
+    if (drag.kind === 'marker') {
+      const marker = state.document.semantic.timeline.timeMarkers.find((item) => item.id === drag.id);
+      return `Moving marker #${marker?.sequence ?? '?'}. All transitions in this column move together. ${suffix}`;
+    }
+    if (drag.kind === 'relation-endpoint') {
+      const relations = drag.relationKind === 'timing' ? state.document.semantic.timingParameters : state.document.semantic.phases;
+      const relation = relations.find((item) => item.id === drag.relationId);
+      return `Rebinding ${relation?.name ?? drag.relationId} ${drag.endpoint} endpoint. Drop it on a transition.`;
+    }
+    return 'Selecting a relation endpoint. Drop on a transition.';
+  }
+
+  function showDragFeedback(svg, drag, activeElement) {
+    const canvas = editor.querySelector('#waveform-canvas');
+    canvas?.classList.add('is-dragging');
+    svg.classList.add('is-dragging');
+    activeElement?.classList.add('is-dragging');
+    root.body?.classList.add('waveform-dragging');
+    const status = editor.querySelector('#drag-status');
+    if (status) {
+      status.hidden = false;
+      status.textContent = dragMessage(drag);
+    }
+  }
+
+  function clearDragFeedback(svg) {
+    editor.querySelector('#waveform-canvas')?.classList.remove('is-dragging');
+    svg.classList.remove('is-dragging');
+    svg.querySelectorAll('.is-dragging').forEach((element) => element.classList.remove('is-dragging'));
+    root.body?.classList.remove('waveform-dragging');
+    const status = editor.querySelector('#drag-status');
+    if (status) status.hidden = true;
   }
 
   function bindCanvasEvents() {
@@ -223,12 +295,24 @@ export function createEditor(root = document) {
         state.drag = { kind: 'marker', id: marker.dataset.markerId };
       } else return;
       svg.setPointerCapture(event.pointerId);
+      showDragFeedback(svg, state.drag, relationEndpoint ?? transition ?? marker);
+      event.stopPropagation();
+      event.preventDefault();
+    });
+    svg.addEventListener('pointermove', (event) => {
+      if (!state.drag) return;
+      const status = editor.querySelector('#drag-status');
+      if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
+        status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event));
+      }
       event.preventDefault();
     });
     svg.addEventListener('pointerup', (event) => {
       if (!state.drag) return;
       const drag = state.drag;
       state.drag = null;
+      clearDragFeedback(svg);
+      event.preventDefault();
       if (drag.kind === 'relation-endpoint') {
         const targetTransitionId = resolveDropTransitionId(root, event.clientX, event.clientY);
         if (!targetTransitionId) {
@@ -269,6 +353,14 @@ export function createEditor(root = document) {
         ? moveMarker(documentModel, { markerId: drag.id, targetSequence })
         : moveTransition(documentModel, { transitionId: drag.id, targetSequence }));
     });
+    svg.addEventListener('pointercancel', () => {
+      if (!state.drag) return;
+      state.drag = null;
+      clearDragFeedback(svg);
+      setNotice('Drag cancelled.');
+      render();
+    });
+    svg.addEventListener('dragstart', (event) => event.preventDefault());
   }
 
   function sequenceFromPointer(svg, event) {
@@ -294,7 +386,9 @@ export function createEditor(root = document) {
       return;
     }
     const policy = getPngExportPolicy(state.document);
-    editor.innerHTML = `<section class="canvas-header"><div><h2>Waveform canvas</h2><p>${policy.draft ? 'Draft rendering: fix validation errors before JSON export.' : 'Validated semantic projection.'}</p></div><p class="drag-hint">Drag a transition or marker column to adjust sequence.</p></section><div id="waveform-canvas">${renderSvg(state.document, { draft: policy.draft })}</div>`;
+    const errors = state.validation?.errors ?? [];
+    const validationSummary = policy.draft ? `<section class="validation-summary" role="alert"><h3>Why this waveform is invalid</h3><p>Fix these ${errors.length} issue${errors.length === 1 ? '' : 's'} before exporting JSON.</p><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol></section>` : '';
+    editor.innerHTML = `<section class="canvas-header"><div><h2>Waveform canvas</h2><p>${policy.draft ? `Draft rendering: ${errors.length} validation issue${errors.length === 1 ? '' : 's'} need attention before JSON export.` : 'Validated semantic projection.'}</p></div><p class="drag-hint">Drag a transition or marker column to adjust sequence.</p></section>${validationSummary}<p id="drag-status" class="drag-status" aria-live="polite" hidden></p><div id="waveform-canvas">${renderSvg(state.document, { draft: policy.draft })}</div>`;
     bindCanvasEvents();
   }
 
@@ -369,6 +463,26 @@ export function createEditor(root = document) {
         name: values.name,
         type: values.type,
         subtype: values.subtype,
+        tags: tagsFrom(values.tags)
+      }));
+    } else if (form.dataset.form === 'transition-edit') {
+      applyOperation((documentModel) => updateTransition(documentModel, values.transitionId, {
+        sequence: Number(values.sequence),
+        rightState: values.rightState
+      }));
+    } else if (form.dataset.form === 'timing-edit') {
+      applyOperation((documentModel) => updateTimingParameter(documentModel, values.parameterId, {
+        name: values.name,
+        startTransitionId: values.startTransitionId,
+        endTransitionId: values.endTransitionId,
+        requirementText: values.requirementText,
+        tags: tagsFrom(values.tags)
+      }));
+    } else if (form.dataset.form === 'phase-edit') {
+      applyOperation((documentModel) => updatePhase(documentModel, values.phaseId, {
+        name: values.name,
+        startTransitionId: values.startTransitionId,
+        endTransitionId: values.endTransitionId,
         tags: tagsFrom(values.tags)
       }));
     }
