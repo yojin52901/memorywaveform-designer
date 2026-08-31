@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { renderEditorMarkup, renderInspectorMarkup, renderPaletteMarkup, resolveDropTransitionId, sequenceFromPointer } from '../src/ui/controller.js';
+import { renderEditorMarkup, renderInspectorMarkup, renderPaletteMarkup, resolveDropTransitionId, sequenceFromPointer, timingPositionFromPointer } from '../src/ui/controller.js';
 import { createDocument } from '../src/domain/document.js';
-import { addAnnotation, addPhase, addSignal, addTimingParameter, setSegmentBoundary } from '../src/domain/operations.js';
+import { addAnnotation, addPhase, addSignal, addTimingParameter, moveSignalRow, setSegmentBoundary } from '../src/domain/operations.js';
 
 test('relation drop resolution uses the element under the pointer, not the captured SVG target', () => {
   const target = { closest: (selector) => selector === '[data-transition-id]' ? { dataset: { transitionId: 'tr_target' } } : null };
@@ -20,6 +20,18 @@ test('dragging uses contiguous order slots starting at 1', () => {
 
   assert.equal(sequenceFromPointer(svg, { clientX: 320 }), 1);
   assert.equal(sequenceFromPointer(svg, { clientX: 470 }), 2);
+});
+
+test('vertical timing drag maps the pointer into the signal overlay interval', () => {
+  const svg = {
+    dataset: { timingTopY: '64', timingBottomY: '144' },
+    getBoundingClientRect: () => ({ top: 100, height: 500 }),
+    viewBox: { baseVal: { height: 300 } }
+  };
+
+  assert.equal(timingPositionFromPointer(svg, { clientY: 100 }), 0);
+  assert.equal(timingPositionFromPointer(svg, { clientY: 100 + (104 / 300) * 500 }), 0.5);
+  assert.equal(timingPositionFromPointer(svg, { clientY: 600 }), 1);
 });
 
 test('the inspector exposes every field used to create waveform objects', () => {
@@ -46,6 +58,25 @@ test('the inspector exposes every field used to create waveform objects', () => 
   assert.doesNotMatch(markup, /Rule engine format|Rule status/);
   assert.match(markup, /data-form="phase-edit"[\s\S]*name="tags"/);
   assert.match(markup, /data-form="annotation-edit"[\s\S]*name="anchor"[\s\S]*name="text"/);
+});
+
+test('signal move controls follow the current presentation order', () => {
+  const first = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  const second = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const weId = second.semantic.signals[0].id;
+  const ceId = second.semantic.signals[1].id;
+  const moved = moveSignalRow(second, { signalId: weId, targetIndex: 1 });
+
+  const markup = renderInspectorMarkup(moved);
+  const editors = [...markup.matchAll(/<form class="signal-editor"[\s\S]*?<\/form>/g)].map((match) => match[0]);
+  const ceEditor = editors.find((editor) => editor.includes(`value="${ceId}"`)) ?? '';
+  const weEditor = editors.find((editor) => editor.includes(`value="${weId}"`)) ?? '';
+
+  assert.ok(markup.indexOf(`value="${ceId}"`) < markup.indexOf(`value="${weId}"`));
+  assert.match(ceEditor, /data-signal-move="-1"[^>]*disabled/);
+  assert.doesNotMatch(ceEditor, /data-signal-move="1"[^>]*disabled/);
+  assert.doesNotMatch(weEditor, /data-signal-move="-1"[^>]*disabled/);
+  assert.match(weEditor, /data-signal-move="1"[^>]*disabled/);
 });
 
 test('history and every authoring tool are independently collapsed by default', () => {

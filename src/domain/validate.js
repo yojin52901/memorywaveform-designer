@@ -156,6 +156,12 @@ function validateAnnotationsAndPresentation(document, refs, errors) {
   for (const laneId of document.presentation?.timingLaneOrder ?? []) {
     if (!refs.timingParameters.has(laneId) && !refs.phases.has(laneId)) errors.push(`Presentation references missing lane ${laneId}.`);
   }
+  for (const [parameterId, position] of Object.entries(document.presentation?.timingParameterPositions ?? {})) {
+    if (!refs.timingParameters.has(parameterId)) errors.push(`Presentation position references missing timing parameter ${parameterId}.`);
+    if (!Number.isFinite(position) || position < 0 || position > 1) {
+      errors.push(`Timing parameter ${parameterId} position must be between 0 and 1.`);
+    }
+  }
 }
 
 export function validateDocument(document) {
@@ -172,6 +178,11 @@ export function validateDocument(document) {
   if (!Array.isArray(document.semantic.timeline.timeMarkers)) errors.push('semantic.timeline.timeMarkers must be an array.');
   if (!Array.isArray(document.presentation.signalRowOrder)) errors.push('presentation.signalRowOrder must be an array.');
   if (!Array.isArray(document.presentation.timingLaneOrder)) errors.push('presentation.timingLaneOrder must be an array.');
+  if (document.presentation.timingParameterPositions !== undefined && (
+    !document.presentation.timingParameterPositions ||
+    typeof document.presentation.timingParameterPositions !== 'object' ||
+    Array.isArray(document.presentation.timingParameterPositions)
+  )) errors.push('presentation.timingParameterPositions must be an object.');
   const collectionsToCheck = [
     ...requiredCollections.map((name) => [name, document.semantic[name]]),
     ['timeline.timeMarkers', document.semantic.timeline.timeMarkers]

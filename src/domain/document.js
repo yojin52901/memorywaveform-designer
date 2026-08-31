@@ -41,6 +41,7 @@ export function createDocument({ title = 'Untitled waveform' } = {}) {
     presentation: {
       signalRowOrder: [],
       timingLaneOrder: [],
+      timingParameterPositions: {},
       collapsedSignalIds: []
     }
   };

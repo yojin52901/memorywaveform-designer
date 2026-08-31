@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createDocument } from '../src/domain/document.js';
-import { addSignal, addTimingParameter, setSegmentBoundary } from '../src/domain/operations.js';
+import { addSignal, addTimingParameter, setSegmentBoundary, setTimingParameterPosition } from '../src/domain/operations.js';
 import { renderSvg } from '../src/render/svg-renderer.js';
 
 function waveformWithTiming() {
@@ -27,6 +27,21 @@ test('renders state paths, selectable transitions, timing lanes, and no semantic
   assert.match(svg, /tWP/);
   assert.doesNotMatch(svg, /DRAFT \/ INVALID/);
   assert.doesNotMatch(JSON.stringify(document), /"x"\s*:/);
+});
+
+test('renders a vertically positioned timing parameter over the signal layer', () => {
+  const document = waveformWithTiming();
+  const parameterId = document.semantic.timingParameters[0].id;
+  const positioned = setTimingParameterPosition(document, { parameterId, position: 0.75 });
+  const svg = renderSvg(positioned);
+  const timingGroup = svg.match(new RegExp(`<g class="relation-lane timing"[^>]*data-relation-id="${parameterId}"[\\s\\S]*?</g>`))?.[0] ?? '';
+  const y = Number(timingGroup.match(/data-relation-y="([\d.]+)"/)?.[1]);
+
+  assert.match(timingGroup, /data-relation-kind="timing"/);
+  assert.match(timingGroup, /data-timing-position="0.75"/);
+  assert.match(timingGroup, /class="relation-drag-target"/);
+  assert.ok(y >= 60 && y <= 150, `expected timing y inside the signal plot, received ${y}`);
+  assert.ok(svg.indexOf('class="signal-row"') < svg.indexOf('class="relation-lane timing"'));
 });
 
 test('renders a clear draft watermark only when requested', () => {

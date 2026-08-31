@@ -11,6 +11,7 @@ import {
   moveMarker,
   moveSignalRow,
   moveTransition,
+  setTimingParameterPosition,
   setSegmentBoundary,
   updateTransition,
   updateSignal
@@ -145,6 +146,24 @@ test('signal metadata and display order can change without changing semantic tra
   assert.deepEqual(moved.presentation.signalRowOrder, [updated.semantic.signals[1].id, updated.semantic.signals[0].id]);
 });
 
+test('moving a timing parameter vertically changes only its presentation position', () => {
+  const initial = setupSignal();
+  const signalId = initial.semantic.signals[0].id;
+  const low = setSegmentBoundary(initial, { signalId, sequence: 10, rightState: 'LOW' });
+  const high = setSegmentBoundary(low, { signalId, sequence: 30, rightState: 'HIGH' });
+  const [startTransition, endTransition] = high.semantic.transitions;
+  const withTiming = addTimingParameter(high, {
+    name: 'tWP', startTransitionId: startTransition.id, endTransitionId: endTransition.id
+  });
+  const parameterId = withTiming.semantic.timingParameters[0].id;
+
+  const moved = setTimingParameterPosition(withTiming, { parameterId, position: 0.75 });
+
+  assert.equal(moved.presentation.timingParameterPositions[parameterId], 0.75);
+  assert.deepEqual(moved.semantic, withTiming.semantic);
+  assert.deepEqual(withTiming.presentation.timingParameterPositions, { [parameterId]: 0.2 });
+});
+
 test('editing a signal can change its initial state', () => {
   const initial = setupSignal();
   const signalId = initial.semantic.signals[0].id;
@@ -204,6 +223,7 @@ test('cascading a transition deletion removes annotations on every deleted objec
   const result = deleteTransitionWithDependencies(withParameterNote, startTransition.id, { cascade: true });
 
   assert.equal(result.document.semantic.annotations.length, 0);
+  assert.deepEqual(result.document.presentation.timingParameterPositions, {});
   assert.equal(validateDocument(result.document).valid, true);
 });
 

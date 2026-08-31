@@ -98,3 +98,16 @@ test('rejects invalid signal types and duplicate cross-marker transition members
   assert.equal(result.valid, false);
   assert.match(result.errors.join('\n'), /signal type|belongs to a different marker/i);
 });
+
+test('rejects invalid or dangling timing parameter presentation positions', () => {
+  const document = validWaveform();
+  const parameterId = document.semantic.timingParameters[0].id;
+  document.presentation.timingParameterPositions[parameterId] = 1.5;
+  document.presentation.timingParameterPositions.tp_missing = 0.5;
+
+  const result = validateDocument(document);
+
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join('\n'), /position.*between 0 and 1/i);
+  assert.match(result.errors.join('\n'), /missing timing parameter/i);
+});

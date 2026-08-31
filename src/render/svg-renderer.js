@@ -33,15 +33,17 @@ function stateClass(state) {
   return state === 'UNKNOWN' ? 'state-unknown' : state === 'UNSPECIFIED' ? 'state-unspecified' : 'state-known';
 }
 
-function relationItems(document) {
-  const relations = new Map([
-    ...document.semantic.timingParameters.map((item) => [item.id, { ...item, kind: 'timing' }]),
-    ...document.semantic.phases.map((item) => [item.id, { ...item, kind: 'phase' }])
-  ]);
+function relationItems(document, kind) {
+  const source = kind === 'timing' ? document.semantic.timingParameters : document.semantic.phases;
+  const relations = new Map(source.map((item) => [item.id, { ...item, kind }]));
   const orderedIds = document.presentation?.timingLaneOrder ?? [];
   const ordered = orderedIds.map((id) => relations.get(id)).filter(Boolean);
   const remaining = [...relations.values()].filter((item) => !orderedIds.includes(item.id));
   return [...ordered, ...remaining];
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 export function renderSvg(document, { draft = false } = {}) {
@@ -57,10 +59,13 @@ export function renderSvg(document, { draft = false } = {}) {
   const endX = leftX + markerGap * (markers.length + 1);
   const width = Math.max(860, endX + 80);
   const markerX = new Map(markers.map((marker, index) => [marker.id, leftX + markerGap * (index + 1)]));
-  const relationList = relationItems(document);
+  const timingList = relationItems(document, 'timing');
+  const phaseList = relationItems(document, 'phase');
   const signalHeight = Math.max(1, signalIds.length) * 94;
-  const relationStartY = 92 + signalHeight + 34;
-  const height = relationStartY + Math.max(1, relationList.length) * 48 + 66;
+  const timingTopY = 64;
+  const timingBottomY = 104 + (Math.max(1, signalIds.length) - 1) * 94 + 40;
+  const phaseStartY = 92 + signalHeight + 34;
+  const height = Math.max(300, phaseStartY + Math.max(1, phaseList.length) * 48 + 66 + document.semantic.annotations.length * 18);
   const transitionById = new Map(document.semantic.transitions.map((transition) => [transition.id, transition]));
 
   const rows = signalIds.map((signalId, index) => {
@@ -88,18 +93,30 @@ export function renderSvg(document, { draft = false } = {}) {
 
   const markerColumns = markers.map((marker) => {
     const x = markerX.get(marker.id);
-    return `<g class="marker-column" data-marker-id="${escapeXml(marker.id)}"><line x1="${x}" x2="${x}" y1="65" y2="${relationStartY - 12}"/><text x="${x}" y="50" text-anchor="middle">#${marker.sequence}</text></g>`;
+    return `<g class="marker-column" data-marker-id="${escapeXml(marker.id)}"><line x1="${x}" x2="${x}" y1="65" y2="${timingBottomY + 12}"/><text x="${x}" y="50" text-anchor="middle">#${marker.sequence}</text></g>`;
   }).join('');
 
-  const lanes = relationList.map((relation, index) => {
+  const phaseLanes = phaseList.map((relation, index) => {
     const startTransition = transitionById.get(relation.startTransitionId);
     const endTransition = transitionById.get(relation.endTransitionId);
     if (!startTransition || !endTransition) return '';
-    const y = relationStartY + index * 48;
+    const y = phaseStartY + index * 48;
     const startX = markerX.get(startTransition.markerId);
     const endRelationX = markerX.get(endTransition.markerId);
-    const requirement = relation.kind === 'timing' && relation.requirementText ? ` ${relation.requirementText}` : '';
-    return `<g class="relation-lane ${relation.kind}" data-relation-id="${escapeXml(relation.id)}"><line x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}" marker-start="url(#arrow)" marker-end="url(#arrow)"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="${relation.kind}" data-relation-endpoint="start" cx="${startX}" cy="${y}" r="6"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="${relation.kind}" data-relation-endpoint="end" cx="${endRelationX}" cy="${y}" r="6"/><text x="${(startX + endRelationX) / 2}" y="${y - 8}" text-anchor="middle">${escapeXml(`${relation.name}${requirement}`)}</text></g>`;
+    return `<g class="relation-lane phase" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="phase"><line x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}" marker-start="url(#arrow)" marker-end="url(#arrow)"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="phase" data-relation-endpoint="start" cx="${startX}" cy="${y}" r="6"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="phase" data-relation-endpoint="end" cx="${endRelationX}" cy="${y}" r="6"/><text x="${(startX + endRelationX) / 2}" y="${y - 8}" text-anchor="middle">${escapeXml(relation.name)}</text></g>`;
+  }).join('');
+
+  const timingLanes = timingList.map((relation, index) => {
+    const startTransition = transitionById.get(relation.startTransitionId);
+    const endTransition = transitionById.get(relation.endTransitionId);
+    if (!startTransition || !endTransition) return '';
+    const storedPosition = document.presentation?.timingParameterPositions?.[relation.id];
+    const position = Number.isFinite(storedPosition) ? clamp(storedPosition, 0, 1) : Math.min(0.8, 0.2 + index * 0.12);
+    const y = Math.round((timingTopY + (timingBottomY - timingTopY) * position) * 10) / 10;
+    const startX = markerX.get(startTransition.markerId);
+    const endRelationX = markerX.get(endTransition.markerId);
+    const requirement = relation.requirementText ? ` ${relation.requirementText}` : '';
+    return `<g class="relation-lane timing" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-timing-position="${position}" data-relation-y="${y}"><line class="relation-drag-target" x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}"/><line class="relation-arrow" x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}" marker-start="url(#arrow)" marker-end="url(#arrow)"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-relation-endpoint="start" cx="${startX}" cy="${y}" r="6"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-relation-endpoint="end" cx="${endRelationX}" cy="${y}" r="6"/><text x="${(startX + endRelationX) / 2}" y="${y - 8}" text-anchor="middle">${escapeXml(`${relation.name}${requirement}`)}</text></g>`;
   }).join('');
 
   const annotations = document.semantic.annotations.map((annotation, index) =>
@@ -107,7 +124,7 @@ export function renderSvg(document, { draft = false } = {}) {
   ).join('');
   const watermark = draft ? `<g class="draft-watermark"><text x="${width / 2}" y="${height / 2}" text-anchor="middle">DRAFT / INVALID</text></g>` : '';
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${lanes}${annotations}${watermark}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}</svg>`;
 }
 
 function loadSvgImage(source) {

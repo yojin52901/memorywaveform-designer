@@ -12,6 +12,7 @@ import {
   moveMarker,
   moveSignalRow,
   moveTransition,
+  setTimingParameterPosition,
   setSegmentBoundary,
   updateAnnotation,
   updatePhase,
@@ -126,12 +127,29 @@ export function sequenceFromPointer(svg, event) {
   return Math.round((x - 170) / 150);
 }
 
+export function timingPositionFromPointer(svg, event) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox.baseVal;
+  const top = Number(svg.dataset.timingTopY);
+  const bottom = Number(svg.dataset.timingBottomY);
+  if (!(rect.height > 0) || !(viewBox.height > 0) || !Number.isFinite(top) || !(bottom > top)) return 0.5;
+  const y = ((event.clientY - rect.top) / rect.height) * viewBox.height;
+  const position = Math.max(0, Math.min(1, (y - top) / (bottom - top)));
+  return Math.round(position * 1000) / 1000;
+}
+
 export function renderInspectorMarkup(documentModel, selectedTransitionId = null) {
   const selected = documentModel.semantic.transitions.find((transition) => transition.id === selectedTransitionId);
   const dependencies = selected ? getTransitionDependencies(documentModel, selected.id) : null;
   const markersById = new Map(documentModel.semantic.timeline.timeMarkers.map((marker) => [marker.id, marker]));
   const selectedSequence = selected ? markersById.get(selected.markerId)?.sequence : null;
-  const signalOptions = documentModel.semantic.signals.map((signal) => option(signal.id, signal.name, signal.id === selected?.signalId)).join('');
+  const signalsById = new Map(documentModel.semantic.signals.map((signal) => [signal.id, signal]));
+  const presentedSignalIds = documentModel.presentation?.signalRowOrder?.filter((id) => signalsById.has(id)) ?? [];
+  const orderedSignals = [
+    ...presentedSignalIds.map((id) => signalsById.get(id)),
+    ...documentModel.semantic.signals.filter((signal) => !presentedSignalIds.includes(signal.id))
+  ];
+  const signalOptions = orderedSignals.map((signal) => option(signal.id, signal.name, signal.id === selected?.signalId)).join('');
   const timingEditors = documentModel.semantic.timingParameters.map((parameter) => `
     <details class="relation-editor">
       <summary>${escapeHtml(parameter.name)} · timing parameter</summary>
@@ -180,7 +198,7 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
       <label>Tags<input name="tags" value="${escapeHtml(documentModel.metadata.tags.join(', '))}" /></label>
       <button class="button secondary" type="submit">Save metadata</button>
     </form>
-    <h3>Signals</h3><div class="signal-editor-list">${documentModel.semantic.signals.map((signal, index) => `<form class="signal-editor" data-form="signal-edit"><input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" /><label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label><label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label><label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, signal.initialState === item)).join('')}</select></label><label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label><label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label><div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === documentModel.semantic.signals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div></form>`).join('') || '<p class="muted">No signals yet.</p>'}</div>
+    <h3>Signals</h3><div class="signal-editor-list">${orderedSignals.map((signal, index) => `<form class="signal-editor" data-form="signal-edit"><input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" /><label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label><label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label><label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, signal.initialState === item)).join('')}</select></label><label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label><label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label><div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === orderedSignals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div></form>`).join('') || '<p class="muted">No signals yet.</p>'}</div>
     <h3>Timing parameters</h3><div class="relation-editor-list">${timingEditors || '<p class="muted">No timing parameters yet.</p>'}</div>
     <h3>Phases</h3><div class="relation-editor-list">${phaseEditors || '<p class="muted">No phases yet.</p>'}</div>
     <h3>Annotations</h3><div class="relation-editor-list">${annotationEditors || '<p class="muted">No annotations yet.</p>'}</div>
@@ -317,6 +335,11 @@ export function createEditor(root = document) {
   }
 
   function dragMessage(drag, targetSequence = null) {
+    if (drag.kind === 'timing-position') {
+      const parameter = state.document.semantic.timingParameters.find((item) => item.id === drag.id);
+      const position = targetSequence ?? state.document.presentation?.timingParameterPositions?.[drag.id] ?? 0.2;
+      return `Moving timing parameter · ${parameter?.name ?? drag.id}. Vertical position: ${Math.round(position * 100)}%.`;
+    }
     const suffix = targetSequence === null ? 'Release to place it.' : `Target order slot: #${targetSequence}.`;
     if (drag.kind === 'transition') {
       const transition = state.document.semantic.transitions.find((item) => item.id === drag.id);
@@ -362,6 +385,7 @@ export function createEditor(root = document) {
     if (!svg) return;
     svg.addEventListener('pointerdown', (event) => {
       const relationEndpoint = event.target.closest('[data-relation-endpoint]');
+      const timingRelation = event.target.closest('[data-relation-kind="timing"][data-relation-id]');
       const transition = event.target.closest('[data-transition-id]');
       const marker = event.target.closest('[data-marker-id]');
       if (relationEndpoint) {
@@ -370,6 +394,12 @@ export function createEditor(root = document) {
           relationId: relationEndpoint.dataset.relationId,
           relationKind: relationEndpoint.dataset.relationKind,
           endpoint: relationEndpoint.dataset.relationEndpoint
+        };
+      } else if (timingRelation) {
+        state.drag = {
+          kind: 'timing-position',
+          id: timingRelation.dataset.relationId,
+          originalY: Number(timingRelation.dataset.relationY)
         };
       } else if (transition && state.relationCreation) {
         state.drag = { kind: 'relation-creation' };
@@ -380,14 +410,23 @@ export function createEditor(root = document) {
         state.drag = { kind: 'marker', id: marker.dataset.markerId };
       } else return;
       svg.setPointerCapture(event.pointerId);
-      showDragFeedback(svg, state.drag, relationEndpoint ?? transition ?? marker);
+      showDragFeedback(svg, state.drag, relationEndpoint ?? timingRelation ?? transition ?? marker);
       event.stopPropagation();
       event.preventDefault();
     });
     svg.addEventListener('pointermove', (event) => {
       if (!state.drag) return;
       const status = editor.querySelector('#drag-status');
-      if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
+      if (state.drag.kind === 'timing-position') {
+        const position = timingPositionFromPointer(svg, event);
+        state.drag.position = position;
+        const top = Number(svg.dataset.timingTopY);
+        const bottom = Number(svg.dataset.timingBottomY);
+        const previewY = top + (bottom - top) * position;
+        const timingRelation = svg.querySelector(`[data-relation-kind="timing"][data-relation-id="${state.drag.id}"]`);
+        timingRelation?.setAttribute('transform', `translate(0 ${previewY - state.drag.originalY})`);
+        if (status) status.textContent = dragMessage(state.drag, position);
+      } else if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
         status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event));
       }
       event.preventDefault();
@@ -398,6 +437,11 @@ export function createEditor(root = document) {
       state.drag = null;
       clearDragFeedback(svg);
       event.preventDefault();
+      if (drag.kind === 'timing-position') {
+        const position = timingPositionFromPointer(svg, event);
+        applyOperation((documentModel) => setTimingParameterPosition(documentModel, { parameterId: drag.id, position }));
+        return;
+      }
       if (drag.kind === 'relation-endpoint') {
         const targetTransitionId = resolveDropTransitionId(root, event.clientX, event.clientY);
         if (!targetTransitionId) {

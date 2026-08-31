@@ -177,6 +177,9 @@ export function deleteSignal(document, signalId) {
   }
   next.presentation.signalRowOrder = next.presentation.signalRowOrder.filter((id) => id !== signalId);
   next.presentation.timingLaneOrder = next.presentation.timingLaneOrder.filter((id) => !parameterIds.has(id) && !phaseIds.has(id));
+  if (next.presentation.timingParameterPositions) {
+    for (const parameterId of parameterIds) delete next.presentation.timingParameterPositions[parameterId];
+  }
   removeUnusedMarkers(next);
   return next;
 }
@@ -398,6 +401,9 @@ export function deleteTransitionWithDependencies(document, transitionId, { casca
       !(annotation.anchorType === 'timingParameter' && parameterIds.has(annotation.anchorId)) &&
       !(annotation.anchorType === 'phase' && phaseIds.has(annotation.anchorId))
     );
+    if (next.presentation.timingParameterPositions) {
+      for (const parameterId of parameterIds) delete next.presentation.timingParameterPositions[parameterId];
+    }
   }
   const nextTransition = next.semantic.transitions.find((item) => item.id === transitionId);
   const { left, right } = segmentPairForTransition(next, nextTransition);
@@ -449,6 +455,22 @@ export function addTimingParameter(document, {
   };
   next.semantic.timingParameters.push(parameter);
   next.presentation.timingLaneOrder.push(parameter.id);
+  next.presentation.timingParameterPositions ??= {};
+  next.presentation.timingParameterPositions[parameter.id] = Math.min(0.8, 0.2 + (next.semantic.timingParameters.length - 1) * 0.12);
+  return next;
+}
+
+export function setTimingParameterPosition(document, { parameterId, position }) {
+  if (!document.semantic.timingParameters.some((item) => item.id === parameterId)) {
+    throw new Error('Timing parameter does not exist.');
+  }
+  const normalizedPosition = Number(position);
+  if (!Number.isFinite(normalizedPosition) || normalizedPosition < 0 || normalizedPosition > 1) {
+    throw new Error('Timing parameter position must be between 0 and 1.');
+  }
+  const next = cloneDocument(document);
+  next.presentation.timingParameterPositions ??= {};
+  next.presentation.timingParameterPositions[parameterId] = Math.round(normalizedPosition * 1000) / 1000;
   return next;
 }
 

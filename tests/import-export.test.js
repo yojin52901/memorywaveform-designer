@@ -27,6 +27,16 @@ test('round-trips a valid normalized document', () => {
   assert.deepEqual(imported.document, document);
 });
 
+test('loads legacy documents that do not have timing parameter positions', () => {
+  const document = validDocument();
+  delete document.presentation.timingParameterPositions;
+
+  const imported = loadDocumentJson(JSON.stringify(document));
+
+  assert.equal(imported.mode, 'editor');
+  assert.equal(imported.canRender, true);
+});
+
 test('keeps invalid imported JSON in non-rendering repair mode', () => {
   const document = validDocument();
   document.semantic.timingParameters[0].endTransitionId = 'tr_missing';

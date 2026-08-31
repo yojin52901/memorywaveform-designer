@@ -87,6 +87,8 @@ Timeline 固定包含 `timelineStart` 與 `timelineEnd`。除兩個固定 bounda
 
 Timing parameter 必須 reference 兩個不同 transition：`startTransitionId` 與 `endTransitionId`。兩 endpoint 的 marker sequence 必須嚴格由左至右；同 marker 或反向 endpoint 是 validation error。start 與 end 可來自同一或不同 signal。多個 parameter 可自由重疊，也可共用任一 endpoint。
 
+Timing parameter 本體顯示在 signal waveform 的上層。Designer 可拖動箭頭線或文字，在 signal plot 的上下範圍內自由調整垂直位置；此動作只更新 `presentation.timingParameterPositions` 的 `0..1` 標準化比例，不修改 endpoint 或任何工程語意。拖動圓形 endpoint 則維持原行為，只重新綁定 transition。Signal 先 render、timing parameter 後 render，確保重疊時 timing parameter 位於上層。
+
 建立 parameter 時支援兩種等價手勢：
 
 - 從 palette 拖出物件，端點依序吸附起始與結束 transition。
@@ -102,7 +104,7 @@ Phase 沒有 timing rule text，但同樣必須由兩個左到右的 transition 
 
 文件 metadata 必填 `title`；可選 `operation`、`description`、`memoryTechnology` 與 `tags`。Annotation 保存描述文字與 anchor reference；anchor 可指向 document、signal、transition、timing parameter 或 phase。Annotation 不是 machine-verifiable timing rule。
 
-JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版，例如 signal row order、timing lane order、折疊狀態與顯示偏好。presentation 不得含 object pixel x/y，也不得改變任何工程意義。
+JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版，例如 signal row order、timing lane order、折疊狀態與顯示偏好。Timing parameter 的垂直位置以 `0..1` 標準化比例保存，不保存 viewport 或 SVG pixel；舊文件沒有此欄位時由 renderer 指派預設位置。presentation 不得含 object pixel x/y，也不得改變任何工程意義。
 
 ### JSON 傳遞契約
 
@@ -199,7 +201,10 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
   },
   "presentation": {
     "signalRowOrder": ["sig_we"],
-    "timingLaneOrder": ["tp_twp", "phase_program"]
+    "timingLaneOrder": ["tp_twp", "phase_program"],
+    "timingParameterPositions": {
+      "tp_twp": 0.2
+    }
   }
 }
 ```
