@@ -59,7 +59,8 @@ textarea { min-height: 62px; resize: vertical; }
 .relation-endpoint.is-dragging { fill: #ffd98b; stroke: #a35800; stroke-width: 4; }
 .relation-lane.timing.is-dragging .relation-arrow { stroke: #a35800; stroke-width: 4; }
 .relation-lane.timing.is-dragging text { fill: #a35800; }
-.drag-status { background: #fff7e2; border: 1px solid #e5b459; border-radius: 8px; color: #704100; font-size: .82rem; font-weight: 700; margin: 0 0 12px; padding: 9px 11px; }
+.drag-status-slot { height: 44px; margin: 0 0 12px; overflow: hidden; }
+.drag-status { background: #fff7e2; border: 1px solid #e5b459; border-radius: 8px; color: #704100; font-size: .82rem; font-weight: 700; height: 44px; margin: 0; overflow: auto; padding: 9px 11px; }
 .validation-summary { background: #fff0da; border: 1px solid #edbd75; border-radius: 9px; margin: 0 0 12px; padding: 12px; }
 .validation-summary h3, .validation-summary p { margin: 0 0 7px; }
 .validation-summary h3 { color: #8b4a00; font-size: .9rem; }
@@ -71,7 +72,6 @@ textarea { min-height: 62px; resize: vertical; }
 .selection-card h3 { margin-top: 0; }
 .selection-card p { font-size: .82rem; }
 .signal-editor-list { display: grid; gap: 10px; }
-.signal-editor { background: #f7f9fc; border: 1px solid #dfe7f1; border-radius: 8px; display: grid; gap: 7px; padding: 10px; }
 .signal-editor .muted { margin: 0; }
 .signal-editor-actions { display: flex; flex-wrap: wrap; gap: 5px; }
 .relation-editor-list { display: grid; gap: 8px; }

@@ -227,6 +227,19 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
     ...documentModel.semantic.signals.filter((signal) => !presentedSignalIds.includes(signal.id))
   ];
   const signalOptions = orderedSignals.map((signal) => option(signal.id, signal.name, signal.id === selected?.signalId)).join('');
+  const signalEditors = orderedSignals.map((signal, index) => `
+    <details class="relation-editor signal-editor">
+      <summary>${escapeHtml(signal.name)} · signal</summary>
+      <form class="tool-form" data-form="signal-edit">
+        <input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" />
+        <label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label>
+        <label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label>
+        <label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, signal.initialState === item)).join('')}</select></label>
+        <label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label>
+        <label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label>
+        <div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === orderedSignals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div>
+      </form>
+    </details>`).join('');
   const timingEditors = documentModel.semantic.timingParameters.map((parameter) => `
     <details class="relation-editor">
       <summary>${escapeHtml(parameter.name)} · timing parameter</summary>
@@ -275,7 +288,7 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
       <label>Tags<input name="tags" value="${escapeHtml(documentModel.metadata.tags.join(', '))}" /></label>
       <button class="button secondary" type="submit">Save metadata</button>
     </form>
-    <h3>Signals</h3><div class="signal-editor-list">${orderedSignals.map((signal, index) => `<form class="signal-editor" data-form="signal-edit"><input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" /><label>Name<input name="name" value="${escapeHtml(signal.name)}" required /></label><label>Type<select name="type">${['control', 'power', 'data', 'clock', 'custom'].map((type) => option(type, type, signal.type === type)).join('')}</select></label><label>Initial state<select name="initialState">${STATES.map((item) => option(item, item, signal.initialState === item)).join('')}</select></label><label>Subtype<input name="subtype" value="${escapeHtml(signal.subtype)}" /></label><label>Tags<input name="tags" value="${escapeHtml(signal.tags.join(', '))}" /></label><div class="signal-editor-actions"><button class="button secondary" type="submit">Save</button><button class="button secondary" type="button" data-signal-move="-1" data-signal-id="${escapeHtml(signal.id)}" ${index === 0 ? 'disabled' : ''}>↑</button><button class="button secondary" type="button" data-signal-move="1" data-signal-id="${escapeHtml(signal.id)}" ${index === orderedSignals.length - 1 ? 'disabled' : ''}>↓</button><button class="button danger" type="button" data-delete-signal="${escapeHtml(signal.id)}">Delete</button></div></form>`).join('') || '<p class="muted">No signals yet.</p>'}</div>
+    <h3>Signals</h3><div class="signal-editor-list">${signalEditors || '<p class="muted">No signals yet.</p>'}</div>
     <h3>Timing parameters</h3><div class="relation-editor-list">${timingEditors || '<p class="muted">No timing parameters yet.</p>'}</div>
     <h3>Phases</h3><div class="relation-editor-list">${phaseEditors || '<p class="muted">No phases yet.</p>'}</div>
     <h3>Annotations</h3><div class="relation-editor-list">${annotationEditors || '<p class="muted">No annotations yet.</p>'}</div>
@@ -340,7 +353,7 @@ export function renderEditorMarkup(documentModel, { mode, validation, view = 'wa
   const validationSummary = policy.draft ? `<section class="validation-summary" role="alert"><h3>Why this waveform is invalid</h3><p>Fix these ${errors.length} issue${errors.length === 1 ? '' : 's'} before exporting JSON.</p><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol></section>` : '';
   const content = activeView === 'json'
     ? `<pre id="document-json-view">${escapeHtml(exportDocumentJson(documentModel))}</pre>`
-    : `<p id="drag-status" class="drag-status" aria-live="polite" hidden></p><div id="waveform-canvas">${renderSvg(documentModel, { draft: policy.draft })}</div>`;
+    : `<div class="drag-status-slot"><p id="drag-status" class="drag-status" aria-live="polite" hidden></p></div><div id="waveform-canvas">${renderSvg(documentModel, { draft: policy.draft })}</div>`;
   return `<section class="canvas-header"><div><h2>${activeView === 'json' ? 'Current document JSON' : 'Waveform canvas'}</h2><p>${policy.draft ? `Draft rendering: ${errors.length} validation issue${errors.length === 1 ? '' : 's'} need attention before JSON export.` : 'Validated semantic projection.'}</p></div>${switcher}</section>${validationSummary}${content}`;
 }
 

@@ -255,7 +255,7 @@ test('signal move controls follow the current presentation order', () => {
   const moved = moveSignalRow(second, { signalId: weId, targetIndex: 1 });
 
   const markup = renderInspectorMarkup(moved);
-  const editors = [...markup.matchAll(/<form class="signal-editor"[\s\S]*?<\/form>/g)].map((match) => match[0]);
+  const editors = [...markup.matchAll(/<details class="relation-editor signal-editor">[\s\S]*?<\/details>/g)].map((match) => match[0]);
   const ceEditor = editors.find((editor) => editor.includes(`value="${ceId}"`)) ?? '';
   const weEditor = editors.find((editor) => editor.includes(`value="${weId}"`)) ?? '';
 
@@ -264,6 +264,19 @@ test('signal move controls follow the current presentation order', () => {
   assert.doesNotMatch(ceEditor, /data-signal-move="1"[^>]*disabled/);
   assert.doesNotMatch(weEditor, /data-signal-move="-1"[^>]*disabled/);
   assert.match(weEditor, /data-signal-move="1"[^>]*disabled/);
+});
+
+test('each signal editor is independently collapsed by default', () => {
+  const first = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  const document = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+
+  const markup = renderInspectorMarkup(document);
+
+  assert.equal((markup.match(/<details class="relation-editor signal-editor">/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /<details class="relation-editor signal-editor" open/);
+  assert.match(markup, /<summary>WE# · signal<\/summary>/);
+  assert.match(markup, /<summary>CE# · signal<\/summary>/);
+  assert.equal((markup.match(/data-form="signal-edit"/g) ?? []).length, 2);
 });
 
 test('history and every authoring tool are independently collapsed by default', () => {
@@ -295,6 +308,17 @@ test('a valid document can switch between waveform and formatted current JSON', 
   assert.match(json, /id="document-json-view"/);
   assert.match(json, /&quot;title&quot;: &quot;Program&quot;/);
   assert.doesNotMatch(json, /id="waveform-canvas"/);
+});
+
+test('waveform rendering reserves a stable drag feedback slot above the canvas', () => {
+  const document = createDocument({ title: 'Program' });
+  const validation = { valid: true, errors: [], warnings: [] };
+
+  const markup = renderEditorMarkup(document, { mode: 'editor', validation, view: 'waveform' });
+  const feedbackSlot = markup.match(/<div class="drag-status-slot">[\s\S]*?<\/div>/)?.[0] ?? '';
+
+  assert.match(feedbackSlot, /<p id="drag-status" class="drag-status" aria-live="polite" hidden><\/p>/);
+  assert.ok(markup.indexOf('class="drag-status-slot"') < markup.indexOf('id="waveform-canvas"'));
 });
 
 test('invalid and repair modes never expose the JSON projection switch', () => {
