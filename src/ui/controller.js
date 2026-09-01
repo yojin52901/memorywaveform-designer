@@ -12,6 +12,7 @@ import {
   moveMarker,
   moveSignalRow,
   moveTransition,
+  rebindTimingEndpoint,
   setTimingParameterPosition,
   setSegmentBoundary,
   updateAnnotation,
@@ -49,6 +50,10 @@ function tagsFrom(value) {
   return value.split(',').map((tag) => tag.trim()).filter(Boolean);
 }
 
+function arrayItems(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -60,6 +65,13 @@ function downloadBlob(blob, filename) {
 
 function formValues(form) {
   return Object.fromEntries(new FormData(form).entries());
+}
+
+function setTimingEndpointNotice(form, endpoint, message = '') {
+  const notice = form.querySelector(`[data-endpoint-group="${endpoint}"] [data-endpoint-notice]`);
+  if (!notice) return;
+  notice.textContent = message;
+  notice.hidden = !message;
 }
 
 function browserStorage(root) {
@@ -102,6 +114,44 @@ function transitionOptions(documentModel, selectedId = null) {
     }).join('');
 }
 
+function timingEndpointCheckboxes(documentModel, parameter, endpoint) {
+  const ids = parameter[`${endpoint}TransitionIds`];
+  const first = documentModel.semantic.transitions.find((item) => item.id === ids[0]);
+  const marker = documentModel.semantic.timeline.timeMarkers.find((item) => item.id === first?.markerId);
+  const signalOrder = new Map((documentModel.presentation?.signalRowOrder ?? []).map((id, index) => [id, index]));
+  const choices = (marker?.transitionIds ?? [])
+    .map((id) => documentModel.semantic.transitions.find((item) => item.id === id))
+    .filter(Boolean)
+    .sort((left, right) => (signalOrder.get(left.signalId) ?? Infinity) - (signalOrder.get(right.signalId) ?? Infinity));
+  const checkboxes = choices.map((transition) => {
+    const signal = documentModel.semantic.signals.find((item) => item.id === transition.signalId);
+    const checked = ids.includes(transition.id) ? ' checked' : '';
+    return `<label><input type="checkbox" name="${endpoint}TransitionIds" value="${escapeHtml(transition.id)}" data-slot="${marker?.sequence ?? ''}"${checked} />${escapeHtml(signal?.name ?? transition.signalId)} · ${escapeHtml(`${transition.fromState}→${transition.toState}`)}</label>`;
+  }).join('');
+  const label = endpoint === 'start' ? 'Start' : 'End';
+  const errorId = `timing-endpoint-error-${parameter.id}-${endpoint}`;
+  return `<fieldset data-endpoint-group="${endpoint}" data-slot="${marker?.sequence ?? ''}" aria-describedby="${escapeHtml(errorId)}"><legend>${label} endpoint · Order slot #${marker?.sequence ?? '?'}</legend>${checkboxes}<p class="field-error" id="${escapeHtml(errorId)}" role="alert" data-endpoint-notice hidden></p></fieldset>`;
+}
+
+export function timingEndpointIdsFromForm(formData, endpoint) {
+  return formData.getAll(`${endpoint}TransitionIds`).map(String).filter(Boolean);
+}
+
+export function timingEndpointSubmission(formData) {
+  const startTransitionIds = timingEndpointIdsFromForm(formData, 'start');
+  const endTransitionIds = timingEndpointIdsFromForm(formData, 'end');
+  const errors = {
+    start: startTransitionIds.length ? '' : 'Select at least one start transition.',
+    end: endTransitionIds.length ? '' : 'Select at least one end transition.'
+  };
+  return {
+    shouldUpdate: !errors.start && !errors.end,
+    startTransitionIds,
+    endTransitionIds,
+    errors
+  };
+}
+
 function updateMetadata(documentModel, values) {
   return {
     ...documentModel,
@@ -120,6 +170,28 @@ export function resolveDropTransitionId(root, clientX, clientY) {
   return root.elementFromPoint(clientX, clientY)?.closest('[data-transition-id]')?.dataset.transitionId ?? null;
 }
 
+export function relationEndpointUpdates(relationKind, endpoint, transitionId) {
+  if (relationKind === 'timing') {
+    return endpoint === 'start'
+      ? { startTransitionIds: [transitionId] }
+      : { endTransitionIds: [transitionId] };
+  }
+  return endpoint === 'start'
+    ? { startTransitionId: transitionId }
+    : { endTransitionId: transitionId };
+}
+
+export function applyRelationEndpointDrop(documentModel, { relationKind, relationId, endpoint, transitionId }) {
+  if (relationKind === 'timing') {
+    return rebindTimingEndpoint(documentModel, { parameterId: relationId, endpoint, transitionId });
+  }
+  return updatePhase(documentModel, relationId, relationEndpointUpdates(relationKind, endpoint, transitionId));
+}
+
+export function transitionDependencyDeletePrompt(names) {
+  return `This transition is used by: ${names}. Delete the transition? Dependent objects will be updated or removed as required.`;
+}
+
 export function sequenceFromPointer(svg, event) {
   const rect = svg.getBoundingClientRect();
   const viewBox = svg.viewBox.baseVal;
@@ -127,15 +199,20 @@ export function sequenceFromPointer(svg, event) {
   return Math.round((x - 170) / 150);
 }
 
-export function timingPositionFromPointer(svg, event) {
+export function pointerSvgY(svg, event) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox.baseVal;
+  return ((event.clientY - rect.top) / rect.height) * viewBox.height;
+}
+
+export function timingPositionFromPointer(svg, event, { grabOffsetY = 0 } = {}) {
   const rect = svg.getBoundingClientRect();
   const viewBox = svg.viewBox.baseVal;
   const top = Number(svg.dataset.timingTopY);
   const bottom = Number(svg.dataset.timingBottomY);
   if (!(rect.height > 0) || !(viewBox.height > 0) || !Number.isFinite(top) || !(bottom > top)) return 0.5;
-  const y = ((event.clientY - rect.top) / rect.height) * viewBox.height;
-  const position = Math.max(0, Math.min(1, (y - top) / (bottom - top)));
-  return Math.round(position * 1000) / 1000;
+  const y = pointerSvgY(svg, event) - grabOffsetY;
+  return Math.max(0, Math.min(1, (y - top) / (bottom - top)));
 }
 
 export function renderInspectorMarkup(documentModel, selectedTransitionId = null) {
@@ -156,8 +233,8 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
       <form class="tool-form" data-form="timing-edit">
         <input type="hidden" name="parameterId" value="${escapeHtml(parameter.id)}" />
         <label>Name<input name="name" value="${escapeHtml(parameter.name)}" required /></label>
-        <label>Start transition<select name="startTransitionId">${transitionOptions(documentModel, parameter.startTransitionId)}</select></label>
-        <label>End transition<select name="endTransitionId">${transitionOptions(documentModel, parameter.endTransitionId)}</select></label>
+        ${timingEndpointCheckboxes(documentModel, parameter, 'start')}
+        ${timingEndpointCheckboxes(documentModel, parameter, 'end')}
         <label>Requirement note (optional)<textarea name="requirementText">${escapeHtml(parameter.requirementText)}</textarea></label>
         <label>Tags<input name="tags" value="${escapeHtml((parameter.tags ?? []).join(', '))}" /></label>
         <button class="button secondary" type="submit">Save timing parameter</button>
@@ -267,6 +344,132 @@ export function renderEditorMarkup(documentModel, { mode, validation, view = 'wa
   return `<section class="canvas-header"><div><h2>${activeView === 'json' ? 'Current document JSON' : 'Waveform canvas'}</h2><p>${policy.draft ? `Draft rendering: ${errors.length} validation issue${errors.length === 1 ? '' : 's'} need attention before JSON export.` : 'Validated semantic projection.'}</p></div>${switcher}</section>${validationSummary}${content}`;
 }
 
+export function bindCanvasPointerEvents(svg, {
+  root,
+  editor,
+  getState,
+  applyOperation,
+  setNotice,
+  render,
+  showDragFeedback,
+  clearDragFeedback,
+  dragMessage
+}) {
+  svg.addEventListener('pointerdown', (event) => {
+    const state = getState();
+    const relationEndpoint = event.target.closest('[data-relation-endpoint]');
+    const timingRelation = event.target.closest('[data-relation-kind="timing"][data-relation-id]');
+    const transition = event.target.closest('[data-transition-id]');
+    const marker = event.target.closest('[data-marker-id]');
+    if (relationEndpoint) {
+      state.drag = {
+        kind: 'relation-endpoint',
+        relationId: relationEndpoint.dataset.relationId,
+        relationKind: relationEndpoint.dataset.relationKind,
+        endpoint: relationEndpoint.dataset.relationEndpoint
+      };
+    } else if (timingRelation) {
+      const storedPosition = state.document.presentation?.timingParameterPositions?.[timingRelation.dataset.relationId];
+      state.drag = {
+        kind: 'timing-position',
+        id: timingRelation.dataset.relationId,
+        originalY: Number(timingRelation.dataset.relationY),
+        grabOffsetY: pointerSvgY(svg, event) - Number(timingRelation.dataset.relationY),
+        position: Number.isFinite(storedPosition) ? storedPosition : Number(timingRelation.dataset.timingPosition)
+      };
+    } else if (transition && state.relationCreation) {
+      state.drag = { kind: 'relation-creation' };
+    } else if (transition) {
+      state.selectedTransitionId = transition.dataset.transitionId;
+      state.drag = { kind: 'transition', id: transition.dataset.transitionId };
+    } else if (marker) {
+      state.drag = { kind: 'marker', id: marker.dataset.markerId };
+    } else return;
+    svg.setPointerCapture(event.pointerId);
+    showDragFeedback(svg, state.drag, relationEndpoint ?? timingRelation ?? transition ?? marker);
+    event.stopPropagation();
+    event.preventDefault();
+  });
+  svg.addEventListener('pointermove', (event) => {
+    const state = getState();
+    if (!state.drag) return;
+    const status = editor.querySelector('#drag-status');
+    if (state.drag.kind === 'timing-position') {
+      const position = timingPositionFromPointer(svg, event, { grabOffsetY: state.drag.grabOffsetY });
+      state.drag.position = position;
+      const top = Number(svg.dataset.timingTopY);
+      const bottom = Number(svg.dataset.timingBottomY);
+      const previewY = top + (bottom - top) * position;
+      const timingRelation = svg.querySelector(`[data-relation-kind="timing"][data-relation-id="${state.drag.id}"]`);
+      timingRelation?.setAttribute('transform', `translate(0 ${previewY - state.drag.originalY})`);
+      if (status) status.textContent = dragMessage(state.drag, position);
+    } else if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
+      status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event));
+    }
+    event.preventDefault();
+  });
+  svg.addEventListener('pointerup', (event) => {
+    const state = getState();
+    if (!state.drag) return;
+    const drag = state.drag;
+    state.drag = null;
+    clearDragFeedback(svg);
+    event.preventDefault();
+    if (drag.kind === 'timing-position') {
+      applyOperation((documentModel) => setTimingParameterPosition(documentModel, { parameterId: drag.id, position: drag.position }));
+      return;
+    }
+    if (drag.kind === 'relation-endpoint') {
+      const targetTransitionId = resolveDropTransitionId(root, event.clientX, event.clientY);
+      if (!targetTransitionId) {
+        setNotice('Drop a relation endpoint on a transition point.');
+        render();
+        return;
+      }
+      applyOperation((documentModel) => applyRelationEndpointDrop(documentModel, {
+        relationKind: drag.relationKind,
+        relationId: drag.relationId,
+        endpoint: drag.endpoint,
+        transitionId: targetTransitionId
+      }));
+      return;
+    }
+    if (drag.kind === 'relation-creation') {
+      const targetTransitionId = resolveDropTransitionId(root, event.clientX, event.clientY);
+      if (!targetTransitionId) {
+        setNotice('Select a transition point on the canvas.');
+        render();
+        return;
+      }
+      if (!state.relationCreation.firstTransitionId) {
+        state.relationCreation.firstTransitionId = targetTransitionId;
+        setNotice('Start transition selected. Select the end transition.');
+        render();
+        return;
+      }
+      const creation = state.relationCreation;
+      state.relationCreation = null;
+      applyOperation((documentModel) => creation.kind === 'timing'
+        ? addTimingParameter(documentModel, { ...creation.values, startTransitionIds: [creation.firstTransitionId], endTransitionIds: [targetTransitionId] })
+        : addPhase(documentModel, { ...creation.values, tags: tagsFrom(creation.values.tags ?? ''), startTransitionId: creation.firstTransitionId, endTransitionId: targetTransitionId }));
+      return;
+    }
+    const targetSequence = sequenceFromPointer(svg, event);
+    applyOperation((documentModel) => drag.kind === 'marker'
+      ? moveMarker(documentModel, { markerId: drag.id, targetSequence })
+      : moveTransition(documentModel, { transitionId: drag.id, targetSequence }));
+  });
+  svg.addEventListener('pointercancel', () => {
+    const state = getState();
+    if (!state.drag) return;
+    state.drag = null;
+    clearDragFeedback(svg);
+    setNotice('Drag cancelled.');
+    render();
+  });
+  svg.addEventListener('dragstart', (event) => event.preventDefault());
+}
+
 export function createEditor(root = document) {
   const palette = root.querySelector('#palette');
   const inspector = root.querySelector('#inspector');
@@ -281,16 +484,16 @@ export function createEditor(root = document) {
   const initialHistory = loadHistory(storage, createHistoryEntry(initialDocument));
   const initialSelection = selectHistoryEntry(initialHistory.history, initialHistory.history.activeId);
   const state = {
-    document: initialSelection.snapshot,
+    document: initialSelection.document,
     history: initialSelection.history,
-    mode: 'editor',
+    mode: initialSelection.mode,
     view: 'waveform',
-    validation: null,
+    validation: initialSelection.validation,
     selectedTransitionId: null,
     drag: null,
     relationCreation: null,
     repairSelection: null,
-    repairText: '',
+    repairText: initialSelection.repairText,
     notice: initialHistory.notice
   };
 
@@ -316,18 +519,26 @@ export function createEditor(root = document) {
     if (state.mode === 'repair') {
       const errors = state.validation?.errors ?? ['Unknown import error.'];
       const documentModel = state.document;
+      const repairCollectionObjects = (collection, itemPrefix) => {
+        const value = documentModel?.semantic?.[collection];
+        const items = arrayItems(value);
+        return Array.isArray(value)
+          ? items.map((item, index) => [`${itemPrefix}:${item?.id ?? index}`, item])
+          : value === undefined ? [] : [[collection, value]];
+      };
       const repairObjects = [
         ['metadata', documentModel?.metadata],
         ['timeline', documentModel?.semantic?.timeline],
-        ...(documentModel?.semantic?.signals ?? []).map((item, index) => [`signal:${item?.id ?? index}`, item]),
-        ...(documentModel?.semantic?.stateSegments ?? []).map((item, index) => [`segment:${item?.id ?? index}`, item]),
-        ...(documentModel?.semantic?.transitions ?? []).map((item, index) => [`transition:${item?.id ?? index}`, item]),
-        ...(documentModel?.semantic?.timingParameters ?? []).map((item, index) => [`timing:${item?.id ?? index}`, item]),
-        ...(documentModel?.semantic?.phases ?? []).map((item, index) => [`phase:${item?.id ?? index}`, item]),
-        ...(documentModel?.semantic?.annotations ?? []).map((item, index) => [`annotation:${item?.id ?? index}`, item])
+        ...repairCollectionObjects('signals', 'signal'),
+        ...repairCollectionObjects('stateSegments', 'segment'),
+        ...repairCollectionObjects('transitions', 'transition'),
+        ...repairCollectionObjects('timingParameters', 'timing'),
+        ...repairCollectionObjects('phases', 'phase'),
+        ...repairCollectionObjects('annotations', 'annotation')
       ].filter(([, value]) => value !== undefined);
       const selectedKey = repairObjects.some(([key]) => key === state.repairSelection) ? state.repairSelection : repairObjects[0]?.[0];
-      const selectedObject = repairObjects.find(([key]) => key === selectedKey)?.[1] ?? documentModel;
+      const selectedEntry = repairObjects.find(([key]) => key === selectedKey);
+      const selectedObject = selectedEntry ? selectedEntry[1] : documentModel;
       inspector.innerHTML = `<h2>Validation errors</h2><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol><h3>Objects received</h3><div class="repair-object-list">${repairObjects.map(([key]) => `<button type="button" class="button secondary" data-repair-object="${escapeHtml(key)}">${escapeHtml(key)}</button>`).join('') || '<p class="muted">No structured object could be parsed.</p>'}</div><h3>Selected properties</h3><pre class="repair-properties">${escapeHtml(JSON.stringify(selectedObject, null, 2))}</pre>`;
       return;
     }
@@ -383,113 +594,17 @@ export function createEditor(root = document) {
   function bindCanvasEvents() {
     const svg = editor.querySelector('svg');
     if (!svg) return;
-    svg.addEventListener('pointerdown', (event) => {
-      const relationEndpoint = event.target.closest('[data-relation-endpoint]');
-      const timingRelation = event.target.closest('[data-relation-kind="timing"][data-relation-id]');
-      const transition = event.target.closest('[data-transition-id]');
-      const marker = event.target.closest('[data-marker-id]');
-      if (relationEndpoint) {
-        state.drag = {
-          kind: 'relation-endpoint',
-          relationId: relationEndpoint.dataset.relationId,
-          relationKind: relationEndpoint.dataset.relationKind,
-          endpoint: relationEndpoint.dataset.relationEndpoint
-        };
-      } else if (timingRelation) {
-        state.drag = {
-          kind: 'timing-position',
-          id: timingRelation.dataset.relationId,
-          originalY: Number(timingRelation.dataset.relationY)
-        };
-      } else if (transition && state.relationCreation) {
-        state.drag = { kind: 'relation-creation' };
-      } else if (transition) {
-        state.selectedTransitionId = transition.dataset.transitionId;
-        state.drag = { kind: 'transition', id: transition.dataset.transitionId };
-      } else if (marker) {
-        state.drag = { kind: 'marker', id: marker.dataset.markerId };
-      } else return;
-      svg.setPointerCapture(event.pointerId);
-      showDragFeedback(svg, state.drag, relationEndpoint ?? timingRelation ?? transition ?? marker);
-      event.stopPropagation();
-      event.preventDefault();
+    bindCanvasPointerEvents(svg, {
+      root,
+      editor,
+      getState: () => state,
+      applyOperation,
+      setNotice,
+      render,
+      showDragFeedback,
+      clearDragFeedback,
+      dragMessage
     });
-    svg.addEventListener('pointermove', (event) => {
-      if (!state.drag) return;
-      const status = editor.querySelector('#drag-status');
-      if (state.drag.kind === 'timing-position') {
-        const position = timingPositionFromPointer(svg, event);
-        state.drag.position = position;
-        const top = Number(svg.dataset.timingTopY);
-        const bottom = Number(svg.dataset.timingBottomY);
-        const previewY = top + (bottom - top) * position;
-        const timingRelation = svg.querySelector(`[data-relation-kind="timing"][data-relation-id="${state.drag.id}"]`);
-        timingRelation?.setAttribute('transform', `translate(0 ${previewY - state.drag.originalY})`);
-        if (status) status.textContent = dragMessage(state.drag, position);
-      } else if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
-        status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event));
-      }
-      event.preventDefault();
-    });
-    svg.addEventListener('pointerup', (event) => {
-      if (!state.drag) return;
-      const drag = state.drag;
-      state.drag = null;
-      clearDragFeedback(svg);
-      event.preventDefault();
-      if (drag.kind === 'timing-position') {
-        const position = timingPositionFromPointer(svg, event);
-        applyOperation((documentModel) => setTimingParameterPosition(documentModel, { parameterId: drag.id, position }));
-        return;
-      }
-      if (drag.kind === 'relation-endpoint') {
-        const targetTransitionId = resolveDropTransitionId(root, event.clientX, event.clientY);
-        if (!targetTransitionId) {
-          setNotice('Drop a relation endpoint on a transition point.');
-          render();
-          return;
-        }
-        applyOperation((documentModel) => {
-          const updates = drag.endpoint === 'start' ? { startTransitionId: targetTransitionId } : { endTransitionId: targetTransitionId };
-          return drag.relationKind === 'timing'
-            ? updateTimingParameter(documentModel, drag.relationId, updates)
-            : updatePhase(documentModel, drag.relationId, updates);
-        });
-        return;
-      }
-      if (drag.kind === 'relation-creation') {
-        const targetTransitionId = resolveDropTransitionId(root, event.clientX, event.clientY);
-        if (!targetTransitionId) {
-          setNotice('Select a transition point on the canvas.');
-          render();
-          return;
-        }
-        if (!state.relationCreation.firstTransitionId) {
-          state.relationCreation.firstTransitionId = targetTransitionId;
-          setNotice('Start transition selected. Select the end transition.');
-          render();
-          return;
-        }
-        const creation = state.relationCreation;
-        state.relationCreation = null;
-        applyOperation((documentModel) => creation.kind === 'timing'
-          ? addTimingParameter(documentModel, { ...creation.values, startTransitionId: creation.firstTransitionId, endTransitionId: targetTransitionId })
-          : addPhase(documentModel, { ...creation.values, tags: tagsFrom(creation.values.tags ?? ''), startTransitionId: creation.firstTransitionId, endTransitionId: targetTransitionId }));
-        return;
-      }
-      const targetSequence = sequenceFromPointer(svg, event);
-      applyOperation((documentModel) => drag.kind === 'marker'
-        ? moveMarker(documentModel, { markerId: drag.id, targetSequence })
-        : moveTransition(documentModel, { transitionId: drag.id, targetSequence }));
-    });
-    svg.addEventListener('pointercancel', () => {
-      if (!state.drag) return;
-      state.drag = null;
-      clearDragFeedback(svg);
-      setNotice('Drag cancelled.');
-      render();
-    });
-    svg.addEventListener('dragstart', (event) => event.preventDefault());
   }
 
   function renderEditor() {
@@ -560,7 +675,11 @@ export function createEditor(root = document) {
     } else if (form.dataset.form === 'boundary') {
       applyOperation((documentModel) => setSegmentBoundary(documentModel, { ...values, sequence: Number(values.sequence) }));
     } else if (form.dataset.form === 'timing') {
-      applyOperation((documentModel) => addTimingParameter(documentModel, values));
+      applyOperation((documentModel) => addTimingParameter(documentModel, {
+        ...values,
+        startTransitionIds: [values.startTransitionId],
+        endTransitionIds: [values.endTransitionId]
+      }));
     } else if (form.dataset.form === 'phase') {
       applyOperation((documentModel) => addPhase(documentModel, { ...values, tags: tagsFrom(values.tags) }));
     } else if (form.dataset.form === 'annotation') {
@@ -573,13 +692,15 @@ export function createEditor(root = document) {
     if (historyId) {
       const selected = selectHistoryEntry(state.history, historyId);
       state.history = selected.history;
-      state.document = selected.snapshot;
-      state.mode = 'editor';
+      state.document = selected.document;
+      state.mode = selected.mode;
+      state.validation = selected.validation;
       state.view = 'waveform';
       state.selectedTransitionId = null;
-      state.repairText = '';
+      state.repairText = selected.repairText;
       saveHistory(storage, state.history);
-      setNotice(`Opened ${state.document.metadata.title}.`);
+      const title = state.document?.metadata?.title ?? state.history.entries.find((entry) => entry.id === historyId)?.title ?? 'history document';
+      setNotice(selected.mode === 'editor' ? `Opened ${title}.` : `Opened ${title} in repair mode.`);
       render();
       return;
     }
@@ -606,7 +727,8 @@ export function createEditor(root = document) {
     const form = event.target.closest('form[data-form]');
     if (!form) return;
     event.preventDefault();
-    const values = formValues(form);
+    const formData = new FormData(form);
+    const values = Object.fromEntries(formData.entries());
     if (form.dataset.form === 'metadata') {
       applyOperation((documentModel) => updateMetadata(documentModel, values));
     } else if (form.dataset.form === 'signal-edit') {
@@ -624,10 +746,18 @@ export function createEditor(root = document) {
         rightState: values.rightState
       }));
     } else if (form.dataset.form === 'timing-edit') {
+      const submission = timingEndpointSubmission(formData);
+      if (!submission.shouldUpdate) {
+        setTimingEndpointNotice(form, 'start', submission.errors.start);
+        setTimingEndpointNotice(form, 'end', submission.errors.end);
+        return;
+      }
+      setTimingEndpointNotice(form, 'start');
+      setTimingEndpointNotice(form, 'end');
       applyOperation((documentModel) => updateTimingParameter(documentModel, values.parameterId, {
         name: values.name,
-        startTransitionId: values.startTransitionId,
-        endTransitionId: values.endTransitionId,
+        startTransitionIds: submission.startTransitionIds,
+        endTransitionIds: submission.endTransitionIds,
         requirementText: values.requirementText,
         tags: tagsFrom(values.tags)
       }));
@@ -656,7 +786,7 @@ export function createEditor(root = document) {
     if (event.target.id === 'delete-transition' && state.selectedTransitionId) {
       const dependencies = getTransitionDependencies(state.document, state.selectedTransitionId);
       const names = [...dependencies.timingParameters, ...dependencies.phases].map((item) => item.name).join(', ');
-      const cascade = !names || window.confirm(`This transition is used by: ${names}. Delete the transition and these dependent objects?`);
+      const cascade = !names || window.confirm(transitionDependencyDeletePrompt(names));
       if (!cascade) return;
       applyOperation((documentModel) => {
         const outcome = deleteTransitionWithDependencies(documentModel, state.selectedTransitionId, { cascade: Boolean(names) });

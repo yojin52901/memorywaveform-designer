@@ -6,6 +6,7 @@ import {
   TIMELINE_END_ID,
   TIMELINE_START_ID
 } from './constants.js';
+import { assertTimingEndpoints } from './timing-endpoints.js';
 
 function markerSequence(document, markerId) {
   if (markerId === TIMELINE_START_ID) return Number.NEGATIVE_INFINITY;
@@ -130,7 +131,17 @@ function validateMarkersAndTransitions(document, refs, errors) {
 }
 
 function validateEndpointRelations(document, refs, errors) {
-  for (const relation of [...document.semantic.timingParameters, ...document.semantic.phases]) {
+  for (const relation of document.semantic.timingParameters) {
+    if ('startTransitionId' in relation || 'endTransitionId' in relation) {
+      errors.push(`${relation.name || relation.id} uses deprecated singular timing endpoint fields.`);
+    }
+    try {
+      assertTimingEndpoints(document, relation.startTransitionIds, relation.endTransitionIds);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : 'Timing parameter has invalid endpoints.');
+    }
+  }
+  for (const relation of document.semantic.phases) {
     const start = refs.transitions.get(relation.startTransitionId);
     const end = refs.transitions.get(relation.endTransitionId);
     if (!start || !end) {

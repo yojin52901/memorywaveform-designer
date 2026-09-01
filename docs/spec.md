@@ -42,8 +42,8 @@ MVP 優先服務新建 waveform spec 與設計 review；不處理既有 PNG/PDF 
 8. 作為 memory designer，我想讓多個 signal transition 位於同一 time marker，表示它們在同一 column 同步發生。
 9. 作為 memory designer，我想拖動整個 marker 來移動所有同步 transition，讓同步語意不被意外拆散。
 10. 作為 memory designer，我想拖動單一 transition 到新 marker 或既有 marker，讓單一訊號能調整位置。
-11. 作為 memory designer，我想用拖拉或兩次點選，從一個 transition 指向另一個 transition 建立 timing parameter。
-12. 作為 memory designer，我想讓多個 timing parameter 共用 endpoint 且能重疊，讓複雜 timing relation 可被完整表達。
+11. 作為 memory designer，我想用拖拉或兩次點選，從一個 transition 指向另一個 transition 建立 timing parameter，並可在同一 time marker 追加同步 transition 作為同一 endpoint。
+12. 作為 memory designer，我想讓多個 timing parameter 共用 endpoint 且能重疊，讓複雜 timing relation 可被完整表達；一個 timing endpoint 的多個 transition 必須屬於同一 order slot。
 13. 作為 memory designer，我想為 timing parameter 填寫自由格式註解，記錄 datasheet requirement 或工程備註，但不影響文件有效性。
 14. 作為 memory designer，我想建立由兩個 transition 定義的 phase，並允許 phase 巢狀或重疊，讓 operation context 可被標示。
 15. 作為 memory designer，我想將 annotation 錨定在文件、signal、transition、parameter 或 phase，讓 review 語境可與正確物件一起保存。
@@ -85,9 +85,9 @@ Timeline 固定包含 `timelineStart` 與 `timelineEnd`。除兩個固定 bounda
 
 ### Timing parameter 與 phase
 
-Timing parameter 必須 reference 兩個不同 transition：`startTransitionId` 與 `endTransitionId`。兩 endpoint 的 marker sequence 必須嚴格由左至右；同 marker 或反向 endpoint 是 validation error。start 與 end 可來自同一或不同 signal。多個 parameter 可自由重疊，也可共用任一 endpoint。
+Timing parameter 使用非空的 `startTransitionIds` 與 `endTransitionIds` arrays。每一個 endpoint 內的所有 transition 必須屬於同一 marker／order slot，且不得重複；start marker sequence 必須嚴格早於 end marker sequence，因此兩 endpoint 不得落在同一 marker 或反向。start 與 end 的同步群組可來自多個 signal。多個 parameter 可自由重疊，也可共用任一 endpoint transition。Phase 仍使用單數的 `startTransitionId` 與 `endTransitionId`。
 
-Timing parameter 本體顯示在 signal waveform 的上層。Designer 可拖動箭頭線或文字，在 signal plot 的上下範圍內自由調整垂直位置；此動作只更新 `presentation.timingParameterPositions` 的 `0..1` 標準化比例，不修改 endpoint 或任何工程語意。拖動圓形 endpoint 則維持原行為，只重新綁定 transition。Signal 先 render、timing parameter 後 render，確保重疊時 timing parameter 位於上層。
+Timing parameter 本體顯示在 signal waveform 的上層。水平箭頭維持已儲存的 overlay position；每個 start/end reference 都從對應箭頭端點畫一條垂直 connector 到其 signal row，並以 timing 色 target mark 標示。相同 endpoint 的 connector 共用 x 座標但可有不同 y 終點。Designer 可拖動箭頭線、label 或寬的透明 hit target，在 signal plot 的上下範圍內自由調整垂直位置；pointer-down 會保留 grab offset，所以初次移動不會跳到指標中心。此動作只更新 `presentation.timingParameterPositions` 的 `0..1` 標準化比例，不修改 endpoint 或任何工程語意。拖動圓形 endpoint 則重新綁定：拖到不同有效 slot 時該 endpoint 會重設為只包含 dropped transition；拖回目前 slot 則保留既有 subset。Signal 先 render、timing parameter、connector 與 target mark 後 render，確保關係位於 waveform 上層。
 
 建立 parameter 時支援兩種等價手勢：
 
@@ -112,10 +112,12 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
 
 ```json
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "metadata": {
     "title": "Program waveform",
     "operation": "program",
+    "description": "Active-low write-enable and chip-enable program pulse",
+    "memoryTechnology": "NVM",
     "tags": ["NVM", "write"]
   },
   "semantic": {
@@ -125,6 +127,14 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
         "name": "WE#",
         "type": "control",
         "subtype": "write-enable",
+        "tags": ["active-low"],
+        "initialState": "HIGH"
+      },
+      {
+        "id": "sig_ce",
+        "name": "CE#",
+        "type": "control",
+        "subtype": "chip-enable",
         "tags": ["active-low"],
         "initialState": "HIGH"
       }
@@ -159,6 +169,27 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
         "startMarkerId": "tm_10",
         "endMarkerId": "tm_20",
         "state": "LOW"
+      },
+      {
+        "id": "seg_we_high_2",
+        "signalId": "sig_we",
+        "startMarkerId": "tm_20",
+        "endMarkerId": "tm_end",
+        "state": "HIGH"
+      },
+      {
+        "id": "seg_ce_high",
+        "signalId": "sig_ce",
+        "startMarkerId": "tm_start",
+        "endMarkerId": "tm_10",
+        "state": "HIGH"
+      },
+      {
+        "id": "seg_ce_low",
+        "signalId": "sig_ce",
+        "startMarkerId": "tm_10",
+        "endMarkerId": "tm_end",
+        "state": "LOW"
       }
     ],
     "transitions": [
@@ -175,18 +206,28 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
         "signalId": "sig_we",
         "markerId": "tm_20",
         "fromState": "LOW",
-        "toState": "HIGH"
+        "toState": "HIGH",
+        "derivedFromSegmentIds": ["seg_we_low", "seg_we_high_2"]
+      },
+      {
+        "id": "tr_ce_fall",
+        "signalId": "sig_ce",
+        "markerId": "tm_10",
+        "fromState": "HIGH",
+        "toState": "LOW",
+        "derivedFromSegmentIds": ["seg_ce_high", "seg_ce_low"]
       }
     ],
     "timingParameters": [
       {
         "id": "tp_twp",
         "name": "tWP",
-        "startTransitionId": "tr_we_fall",
-        "endTransitionId": "tr_we_rise",
+        "startTransitionIds": ["tr_we_fall", "tr_ce_fall"],
+        "endTransitionIds": ["tr_we_rise"],
         "requirementText": ">= 20 ns",
         "parsedRequirement": null,
-        "validationStatus": "note"
+        "validationStatus": "note",
+        "tags": ["program"]
       }
     ],
     "phases": [
@@ -194,22 +235,24 @@ JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版�
         "id": "phase_program",
         "name": "Program",
         "startTransitionId": "tr_we_fall",
-        "endTransitionId": "tr_we_rise"
+        "endTransitionId": "tr_we_rise",
+        "tags": ["write"]
       }
     ],
     "annotations": []
   },
   "presentation": {
-    "signalRowOrder": ["sig_we"],
+    "signalRowOrder": ["sig_we", "sig_ce"],
     "timingLaneOrder": ["tp_twp", "phase_program"],
     "timingParameterPositions": {
       "tp_twp": 0.2
-    }
+    },
+    "collapsedSignalIds": []
   }
 }
 ```
 
-下游取得 transition 順序時，必須將 `timeMarkers` 依 `sequence` 排序，再依每個 marker 的 `transitionIds` 讀取同步群組。第一版不額外輸出重複的 `transitionSequence` projection。下游不得由 presentation 或 PNG 推導工程關係。
+下游取得 transition 順序時，必須將 `timeMarkers` 依 `sequence` 排序，再依每個 marker 的 `transitionIds` 讀取同步群組。Timing parameter 的 plural endpoint arrays 是 schema `1.1` 唯一的 canonical representation；匯出不得包含 deprecated singular timing fields。已知 schema `1.0` 匯入時，`startTransitionId` 與 `endTransitionId` 各自遷移為一元素 array、移除 singular fields 並將 `schemaVersion` 升為 `1.1`，再正常驗證；不會猜測遺失 reference 或修復無效資料。未知 schema version 仍進入 repair mode。第一版不額外輸出重複的 `transitionSequence` projection。下游不得由 presentation 或 PNG 推導工程關係。
 
 ### Validation、刪除與匯出
 
@@ -219,11 +262,11 @@ Validator 至少檢查：
 - 每個 signal 的 segment 是否完整覆蓋 timeline、依序相接且不重疊；
 - transition 是否與相鄰 segment state 及 marker 一致；
 - marker 是否為固定 boundary 或至少包含一個 transition，且 sequence 唯一；
-- timing parameter 與 phase endpoint 是否存在、不同且嚴格由左至右；
-- timing parameter 的 endpoint reference 與順序是否合法；`requirementText` 僅為註解，不參與 validation；
+- timing parameter 的 plural endpoint arrays 是否存在且非空、ID 是否唯一及存在、各 endpoint 是否只屬於一個 order slot、start/end 是否嚴格由左至右；schema `1.1` 不得同時含 deprecated singular timing fields；
+- phase endpoint 是否存在、不同且嚴格由左至右；`requirementText` 僅為註解，不參與 validation；
 - annotation anchor 與 presentation reference 是否存在。
 
-刪除被 reference 的 transition 時，UI 必須列出所有相依 timing parameter 與 phase。Designer 可取消，或確認級聯刪除依賴物件；不得留下 dangling reference。
+刪除被 reference 的 transition 時，UI 必須列出所有相依 timing parameter 與 phase。Designer 可取消；確認刪除時，multi-member timing endpoint 只移除該 transition，兩端仍非空則 parameter 保留，只有移除會使某端空掉時才刪除 parameter。Phase 與 singleton timing dependency 依既有 cascade 行為移除；不得留下 dangling reference。
 
 一般編輯中的 validation error 禁止 JSON 匯出。PNG 可匯出為 review 草稿，但必須加上明顯 `DRAFT / INVALID` watermark。文件 valid 時，JSON 與 PNG 皆由同一 snapshot 產生。
 
@@ -255,14 +298,15 @@ Validator 至少檢查：
 - 移動共享 segment boundary 時，兩側 segment 與 derived transition 一致，既有 transition ID 在可保留時不改變；
 - 同 marker transition 視為同步，marker sequence 改變後左到右順序正確；
 - 移動單一 transition 能拆出或合併 marker，且空 marker 被移除；
-- timing parameter 與 phase 僅能綁定存在、不同、且由左至右的 transition；
-- 多個 parameter 可共用 endpoint；刪除 endpoint 能精確列出與級聯刪除 dependency；
+- timing parameter endpoint arrays 僅能包含存在、不同且同一 order slot 的 transition，且 start/end marker 必須由左至右；phase 維持單一 endpoint；
+- multi-transition endpoint 會渲染每個 reference 的垂直 connector 與 target mark；multi-member endpoint 刪除一個 reference 時保留未清空的 parameter；
+- schema `1.0` singleton timing fields 遷移為 `1.1` plural arrays，`1.1` 匯出只含 canonical plural fields；
 - 任意 timing requirement 註解（包含空白或非 DSL 文字）都不影響文件有效性與匯出；
 - JSON 匯出包含語意資料且不需要 pixel；回匯後可得到相同 document；
 - invalid authoring document 阻擋 JSON、允許帶水印 PNG；invalid import 進 repair mode 且不 render；
 - valid document 生成的 SVG 與 PNG 對應同一 model snapshot。
 
-使用原生 Node test runner 驗證 model、parser 與 validator。手動 browser smoke test 應涵蓋新增 signal、建立／移動 transition、建立 parameter／phase、annotation、JSON 回匯、repair mode、JSON 匯出與 PNG 匯出。
+使用原生 Node test runner 驗證 model、parser 與 validator，並從 `src/main.js` 遞迴驗證每個 reachable local browser module 均存在。手動 browser smoke test 應涵蓋在同一 start slot 建立兩個 transition、建立含兩個 start connector 的 timing parameter、自由垂直拖曳 overlay（arrow、label、wide hit target 均不跳動）、endpoint rebind、schema `1.1` JSON 匯出與 schema `1.0` 匯入遷移。
 
 ## 不在範圍內
 

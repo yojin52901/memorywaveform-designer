@@ -15,8 +15,8 @@ function validWaveform() {
   const [startTransition, endTransition] = rising.semantic.transitions;
   return addTimingParameter(rising, {
     name: 'tWP',
-    startTransitionId: startTransition.id,
-    endTransitionId: endTransition.id,
+    startTransitionIds: [startTransition.id],
+    endTransitionIds: [endTransition.id],
     requirementText: '>= 20 ns'
   });
 }
@@ -26,10 +26,10 @@ test('a complete waveform with parsed timing rule is valid', () => {
   assert.deepEqual(result, { valid: true, errors: [], warnings: [] });
 });
 
-test('rejects reversed or same-marker timing endpoints', () => {
+test('rejects reversed timing endpoints', () => {
   const document = validWaveform();
   const parameter = document.semantic.timingParameters[0];
-  [parameter.startTransitionId, parameter.endTransitionId] = [parameter.endTransitionId, parameter.startTransitionId];
+  [parameter.startTransitionIds, parameter.endTransitionIds] = [parameter.endTransitionIds, parameter.startTransitionIds];
 
   const result = validateDocument(document);
   assert.equal(result.valid, false);
@@ -38,7 +38,7 @@ test('rejects reversed or same-marker timing endpoints', () => {
 
 test('reports dangling references and incomplete signal coverage', () => {
   const document = validWaveform();
-  document.semantic.timingParameters[0].endTransitionId = 'tr_missing';
+  document.semantic.timingParameters[0].endTransitionIds = ['tr_missing'];
   document.semantic.stateSegments.pop();
 
   const result = validateDocument(document);
@@ -79,13 +79,23 @@ test('rebinding a timing endpoint preserves the parameter identity', () => {
   const document = validWaveform();
   const parameter = document.semantic.timingParameters[0];
   const added = setSegmentBoundary(document, { signalId: document.semantic.signals[0].id, sequence: 20, rightState: 'UNKNOWN' });
-  const targetTransition = added.semantic.transitions.find((transition) => transition.id !== parameter.startTransitionId && transition.id !== parameter.endTransitionId);
+  const targetTransition = added.semantic.transitions.find((transition) => !parameter.startTransitionIds.includes(transition.id) && !parameter.endTransitionIds.includes(transition.id));
   const updated = updateTimingParameter(added, parameter.id, {
-    startTransitionId: added.semantic.transitions[0].id,
-    endTransitionId: targetTransition.id
+    startTransitionIds: [added.semantic.transitions[0].id],
+    endTransitionIds: [targetTransition.id]
   });
 
   assert.equal(updated.semantic.timingParameters[0].id, parameter.id);
+});
+
+test('rejects missing plural timing fields and deprecated singular fields', () => {
+  const missingArrays = validWaveform();
+  delete missingArrays.semantic.timingParameters[0].startTransitionIds;
+  const singularFields = validWaveform();
+  singularFields.semantic.timingParameters[0].startTransitionId = singularFields.semantic.timingParameters[0].startTransitionIds[0];
+
+  assert.match(validateDocument(missingArrays).errors.join('\n'), /at least one transition/);
+  assert.match(validateDocument(singularFields).errors.join('\n'), /deprecated singular/i);
 });
 
 test('rejects invalid signal types and duplicate cross-marker transition membership', () => {

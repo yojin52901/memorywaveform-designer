@@ -11,12 +11,13 @@ import {
   moveMarker,
   moveSignalRow,
   moveTransition,
+  rebindTimingEndpoint,
   setTimingParameterPosition,
   setSegmentBoundary,
   updateTransition,
   updateSignal
 } from '../src/domain/operations.js';
-import { addAnnotation, addTimingParameter, updateAnnotation } from '../src/domain/operations.js';
+import { addAnnotation, addPhase, addTimingParameter, updateAnnotation, updateTimingParameter } from '../src/domain/operations.js';
 import { validateDocument } from '../src/domain/validate.js';
 
 function setupSignal(name = 'WE#') {
@@ -27,6 +28,60 @@ function setupSignal(name = 'WE#') {
   });
 }
 
+function transitionsAt(document, sequence) {
+  const marker = document.semantic.timeline.timeMarkers.find((item) => item.sequence === sequence);
+  return marker.transitionIds.map((id) => document.semantic.transitions.find((item) => item.id === id));
+}
+
+function synchronousTwoSignalWaveform() {
+  let document = createDocument({ title: 'Synchronous timing' });
+  document = addSignal(document, { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const [we, ce] = document.semantic.signals;
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: ce.id, sequence: 10, rightState: 'LOW' });
+  return setSegmentBoundary(document, { signalId: we.id, sequence: 30, rightState: 'HIGH' });
+}
+
+function multiEndpointFixture() {
+  let document = synchronousTwoSignalWaveform();
+  const startTransitions = transitionsAt(document, 10);
+  const endTransition = transitionsAt(document, 30)[0];
+  document = addTimingParameter(document, {
+    name: 'tSYNC',
+    startTransitionIds: startTransitions.map((item) => item.id),
+    endTransitionIds: [endTransition.id]
+  });
+  document = addSignal(document, { name: 'OE#', type: 'control', initialState: 'HIGH' });
+  const oe = document.semantic.signals.find((item) => item.name === 'OE#');
+  document = setSegmentBoundary(document, { signalId: oe.id, sequence: 20, rightState: 'LOW' });
+  return {
+    document,
+    parameterId: document.semantic.timingParameters[0].id,
+    selectedStart: startTransitions[0],
+    newStart: transitionsAt(document, 20)[0]
+  };
+}
+
+function phaseMoveFixture() {
+  let document = createDocument({ title: 'Phase move validation' });
+  document = addSignal(document, { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'OE#', type: 'control', initialState: 'HIGH' });
+  const [we, ce, oe] = document.semantic.signals;
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: ce.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: oe.id, sequence: 20, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 30, rightState: 'HIGH' });
+  document = setSegmentBoundary(document, { signalId: ce.id, sequence: 30, rightState: 'HIGH' });
+  const startTransition = transitionsAt(document, 10).find((item) => item.signalId === we.id);
+  const endTransition = transitionsAt(document, 20).find((item) => item.signalId === oe.id);
+  document = addPhase(document, {
+    name: 'write cycle', startTransitionId: startTransition.id, endTransitionId: endTransition.id
+  });
+  return { document, startTransition, startMarkerId: startTransition.markerId, oeId: oe.id };
+}
+
 test('adding a signal creates one segment covering the whole timeline', () => {
   const next = setupSignal();
 
@@ -35,6 +90,24 @@ test('adding a signal creates one segment covering the whole timeline', () => {
   assert.equal(next.semantic.stateSegments[0].state, 'HIGH');
   assert.equal(next.semantic.stateSegments[0].startMarkerId, 'tm_start');
   assert.equal(next.semantic.stateSegments[0].endMarkerId, 'tm_end');
+});
+
+test('saving a timing position rounds to six decimal places', () => {
+  let document = setupSignal();
+  const signalId = document.semantic.signals[0].id;
+  document = setSegmentBoundary(document, { signalId, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId, sequence: 30, rightState: 'HIGH' });
+  const [start, end] = document.semantic.transitions;
+  document = addTimingParameter(document, {
+    name: 'tWP', startTransitionIds: [start.id], endTransitionIds: [end.id]
+  });
+
+  const updated = setTimingParameterPosition(document, {
+    parameterId: document.semantic.timingParameters[0].id,
+    position: 0.1234567
+  });
+
+  assert.equal(updated.presentation.timingParameterPositions[document.semantic.timingParameters[0].id], 0.123457);
 });
 
 test('splitting HIGH to LOW creates a derived falling transition', () => {
@@ -126,6 +199,37 @@ test('moving a marker moves its complete synchronous transition group', () => {
   assert.deepEqual(moved.semantic.transitions.map((transition) => transition.id).sort(), transitionIds);
 });
 
+test('moving a phase start transition onto its end slot is rejected', () => {
+  const { document, startTransition } = phaseMoveFixture();
+
+  assert.throws(
+    () => moveTransition(document, { transitionId: startTransition.id, targetSequence: 20 }),
+    /Relation endpoints must be distinct and strictly left-to-right\./
+  );
+});
+
+test('moving a phase start marker past its end is rejected', () => {
+  const { document, startMarkerId } = phaseMoveFixture();
+
+  assert.throws(
+    () => moveMarker(document, { markerId: startMarkerId, targetSequence: 25 }),
+    /Relation endpoints must be distinct and strictly left-to-right\./
+  );
+});
+
+test('moving a phase start to another signal past its end is rejected', () => {
+  const { document, startTransition, oeId } = phaseMoveFixture();
+
+  assert.throws(
+    () => updateTransition(document, startTransition.id, {
+      signalId: oeId,
+      sequence: 25,
+      rightState: 'UNKNOWN'
+    }),
+    /Relation endpoints must be distinct and strictly left-to-right\./
+  );
+});
+
 test('dependency query is empty until timing objects reference a transition', () => {
   const document = setupSignal();
   const signalId = document.semantic.signals[0].id;
@@ -134,6 +238,159 @@ test('dependency query is empty until timing objects reference a transition', ()
 
   assert.deepEqual(deps, { timingParameters: [], phases: [] });
   assert.equal(deleteTransitionWithDependencies(next, next.semantic.transitions[0].id).deleted, true);
+});
+
+test('accepts a selected subset from one synchronous transition group', () => {
+  const document = synchronousTwoSignalWaveform();
+  const [startA, startB] = transitionsAt(document, 10);
+  const [end] = transitionsAt(document, 30);
+
+  const updated = addTimingParameter(document, {
+    name: 'tSYNC', startTransitionIds: [startA.id, startB.id], endTransitionIds: [end.id]
+  });
+
+  assert.deepEqual(validateDocument(updated), { valid: true, errors: [], warnings: [] });
+  assert.equal(getTransitionDependencies(updated, startB.id).timingParameters.length, 1);
+});
+
+test('rebinding to another slot resets only that endpoint to the dropped transition', () => {
+  const { document, parameterId, newStart } = multiEndpointFixture();
+  const previousEndIds = document.semantic.timingParameters[0].endTransitionIds;
+
+  const updated = rebindTimingEndpoint(document, { parameterId, endpoint: 'start', transitionId: newStart.id });
+
+  assert.deepEqual(updated.semantic.timingParameters[0].startTransitionIds, [newStart.id]);
+  assert.deepEqual(updated.semantic.timingParameters[0].endTransitionIds, previousEndIds);
+});
+
+test('rebinding within the current slot preserves the selected subset', () => {
+  const { document, parameterId, selectedStart } = multiEndpointFixture();
+  const previousStartIds = document.semantic.timingParameters[0].startTransitionIds;
+
+  const updated = rebindTimingEndpoint(document, { parameterId, endpoint: 'start', transitionId: selectedStart.id });
+
+  assert.deepEqual(updated.semantic.timingParameters[0].startTransitionIds, previousStartIds);
+});
+
+test('moving one member out of a multi-member timing endpoint is rejected', () => {
+  const { document, selectedStart } = multiEndpointFixture();
+
+  assert.throws(
+    () => moveTransition(document, { transitionId: selectedStart.id, targetSequence: 15 }),
+    /Move the timing endpoint selection before splitting its synchronous transitions\./
+  );
+});
+
+test('updating one timing endpoint member into another slot is rejected', () => {
+  const { document, selectedStart } = multiEndpointFixture();
+  const oe = document.semantic.signals.find((item) => item.name === 'OE#');
+
+  assert.throws(
+    () => updateTransition(document, selectedStart.id, {
+      signalId: oe.id,
+      sequence: 15,
+      rightState: 'UNKNOWN'
+    }),
+    /Move the timing endpoint selection before splitting its synchronous transitions\./
+  );
+});
+
+test('reassigning one timing endpoint member to another signal at the same slot is allowed', () => {
+  const { document, selectedStart } = multiEndpointFixture();
+  const oe = document.semantic.signals.find((item) => item.name === 'OE#');
+
+  const updated = updateTransition(document, selectedStart.id, {
+    signalId: oe.id,
+    sequence: 10,
+    rightState: 'UNKNOWN'
+  });
+
+  assert.equal(updated.semantic.transitions.find((item) => item.id === selectedStart.id).signalId, oe.id);
+  assert.equal(validateDocument(updated).valid, true);
+});
+
+test('moving the complete marker preserves a multi-member timing endpoint', () => {
+  const { document, selectedStart } = multiEndpointFixture();
+  const markerId = document.semantic.transitions.find((item) => item.id === selectedStart.id).markerId;
+
+  const updated = moveMarker(document, { markerId, targetSequence: 15 });
+
+  assert.equal(updated.semantic.timeline.timeMarkers.find((item) => item.sequence === 15).transitionIds.length, 2);
+  assert.equal(validateDocument(updated).valid, true);
+});
+
+test('dependency lookup finds any member of a timing endpoint', () => {
+  const { document } = multiEndpointFixture();
+  const secondStart = document.semantic.timingParameters[0].startTransitionIds[1];
+
+  const dependencies = getTransitionDependencies(document, secondStart);
+
+  assert.deepEqual(dependencies.timingParameters.map((item) => item.name), ['tSYNC']);
+  assert.equal(deleteTransitionWithDependencies(document, secondStart).deleted, false);
+});
+
+test('cascading one member from a multi-member endpoint retains the timing parameter', () => {
+  const { document, selectedStart, parameterId } = multiEndpointFixture();
+  const annotated = addAnnotation(document, {
+    text: 'keep this parameter note', anchorType: 'timingParameter', anchorId: parameterId
+  });
+
+  const result = deleteTransitionWithDependencies(annotated, selectedStart.id, { cascade: true });
+
+  assert.equal(result.deleted, true);
+  assert.deepEqual(result.document.semantic.timingParameters[0].startTransitionIds, [
+    annotated.semantic.timingParameters[0].startTransitionIds[1]
+  ]);
+  assert.equal(result.document.semantic.annotations.some((item) => item.anchorId === parameterId), true);
+  assert.equal(result.document.presentation.timingLaneOrder.includes(parameterId), true);
+  assert.equal(Number.isFinite(result.document.presentation.timingParameterPositions[parameterId]), true);
+  assert.equal(validateDocument(result.document).valid, true);
+});
+
+test('cascading the last endpoint member removes the parameter and its presentation artifacts', () => {
+  const { document, parameterId } = multiEndpointFixture();
+  const endTransitionId = document.semantic.timingParameters[0].endTransitionIds[0];
+  const annotated = addAnnotation(document, {
+    text: 'remove this parameter note', anchorType: 'timingParameter', anchorId: parameterId
+  });
+
+  const result = deleteTransitionWithDependencies(annotated, endTransitionId, { cascade: true });
+
+  assert.equal(result.deleted, true);
+  assert.equal(result.document.semantic.timingParameters.length, 0);
+  assert.equal(result.document.semantic.annotations.some((item) => item.anchorId === parameterId), false);
+  assert.equal(result.document.presentation.timingLaneOrder.includes(parameterId), false);
+  assert.equal(parameterId in result.document.presentation.timingParameterPositions, false);
+  assert.equal(validateDocument(result.document).valid, true);
+});
+
+test('rejects invalid timing endpoint sets during creation and update', () => {
+  const document = synchronousTwoSignalWaveform();
+  const [startA, startB] = transitionsAt(document, 10);
+  const [end] = transitionsAt(document, 30);
+
+  assert.throws(() => addTimingParameter(document, {
+    name: 'tDuplicate', startTransitionIds: [startA.id, startA.id], endTransitionIds: [end.id]
+  }), /duplicate transitions/);
+  assert.throws(() => addTimingParameter(document, {
+    name: 'tCrossSlot', startTransitionIds: [startA.id, end.id], endTransitionIds: [end.id]
+  }), /share one order slot/);
+  assert.throws(() => addTimingParameter(document, {
+    name: 'tEmpty', startTransitionIds: [], endTransitionIds: [end.id]
+  }), /at least one transition/);
+  assert.throws(() => addTimingParameter(document, {
+    name: 'tDangling', startTransitionIds: ['tr_missing'], endTransitionIds: [end.id]
+  }), /missing transition/);
+  assert.throws(() => addTimingParameter(document, {
+    name: 'tReversed', startTransitionIds: [end.id], endTransitionIds: [startB.id]
+  }), /strictly left-to-right/);
+
+  const valid = addTimingParameter(document, {
+    name: 'tValid', startTransitionIds: [startA.id], endTransitionIds: [end.id]
+  });
+  assert.throws(() => updateTimingParameter(valid, valid.semantic.timingParameters[0].id, {
+    startTransitionIds: [end.id], endTransitionIds: [startA.id]
+  }), /strictly left-to-right/);
 });
 
 test('signal metadata and display order can change without changing semantic transitions', () => {
@@ -153,7 +410,7 @@ test('moving a timing parameter vertically changes only its presentation positio
   const high = setSegmentBoundary(low, { signalId, sequence: 30, rightState: 'HIGH' });
   const [startTransition, endTransition] = high.semantic.transitions;
   const withTiming = addTimingParameter(high, {
-    name: 'tWP', startTransitionId: startTransition.id, endTransitionId: endTransition.id
+    name: 'tWP', startTransitionIds: [startTransition.id], endTransitionIds: [endTransition.id]
   });
   const parameterId = withTiming.semantic.timingParameters[0].id;
 
@@ -216,7 +473,7 @@ test('cascading a transition deletion removes annotations on every deleted objec
   const startTransition = high.semantic.transitions[0];
   const endTransition = high.semantic.transitions[1];
   const withTiming = addTimingParameter(high, {
-    name: 'tWP', startTransitionId: startTransition.id, endTransitionId: endTransition.id, requirementText: '>= 20 ns'
+    name: 'tWP', startTransitionIds: [startTransition.id], endTransitionIds: [endTransition.id], requirementText: '>= 20 ns'
   });
   const withTransitionNote = addAnnotation(withTiming, { text: 'edge note', anchorType: 'transition', anchorId: startTransition.id });
   const withParameterNote = addAnnotation(withTransitionNote, { text: 'rule note', anchorType: 'timingParameter', anchorId: withTiming.semantic.timingParameters[0].id });

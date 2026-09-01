@@ -1,4 +1,5 @@
 import { validateDocument } from './validate.js';
+import { migrateDocument } from './migrate.js';
 
 function invalidOutcome(document, errors) {
   return {
@@ -17,6 +18,7 @@ export function loadDocumentJson(text) {
     return invalidOutcome(null, [error instanceof Error ? error.message : 'JSON import failed.']);
   }
   try {
+    document = migrateDocument(document).document;
     const validation = validateDocument(document);
     return {
       document,

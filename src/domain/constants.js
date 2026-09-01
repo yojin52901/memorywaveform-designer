@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = '1.0';
+export const SCHEMA_VERSION = '1.1';
 
 export const TIMELINE_START_ID = 'tm_start';
 export const TIMELINE_END_ID = 'tm_end';

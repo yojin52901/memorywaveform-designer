@@ -67,10 +67,11 @@ export function renderSvg(document, { draft = false } = {}) {
   const phaseStartY = 92 + signalHeight + 34;
   const height = Math.max(300, phaseStartY + Math.max(1, phaseList.length) * 48 + 66 + document.semantic.annotations.length * 18);
   const transitionById = new Map(document.semantic.transitions.map((transition) => [transition.id, transition]));
+  const signalYById = new Map(signalIds.map((signalId, index) => [signalId, 104 + index * 94]));
 
-  const rows = signalIds.map((signalId, index) => {
+  const rows = signalIds.map((signalId) => {
     const signal = signalsById.get(signalId);
-    const baseY = 104 + index * 94;
+    const baseY = signalYById.get(signalId);
     const segments = segmentsForSignal(document, signalId, markerX, endX);
     const path = segments.reduce((parts, segment, segmentIndex) => {
       const segmentStartX = segmentIndex === 0 ? leftX : markerX.get(segment.startMarkerId);
@@ -107,16 +108,25 @@ export function renderSvg(document, { draft = false } = {}) {
   }).join('');
 
   const timingLanes = timingList.map((relation, index) => {
-    const startTransition = transitionById.get(relation.startTransitionId);
-    const endTransition = transitionById.get(relation.endTransitionId);
+    const startTransition = transitionById.get(relation.startTransitionIds[0]);
+    const endTransition = transitionById.get(relation.endTransitionIds[0]);
     if (!startTransition || !endTransition) return '';
     const storedPosition = document.presentation?.timingParameterPositions?.[relation.id];
     const position = Number.isFinite(storedPosition) ? clamp(storedPosition, 0, 1) : Math.min(0.8, 0.2 + index * 0.12);
-    const y = Math.round((timingTopY + (timingBottomY - timingTopY) * position) * 10) / 10;
+    const y = timingTopY + (timingBottomY - timingTopY) * position;
     const startX = markerX.get(startTransition.markerId);
     const endRelationX = markerX.get(endTransition.markerId);
     const requirement = relation.requirementText ? ` ${relation.requirementText}` : '';
-    return `<g class="relation-lane timing" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-timing-position="${position}" data-relation-y="${y}"><line class="relation-drag-target" x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}"/><line class="relation-arrow" x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}" marker-start="url(#arrow)" marker-end="url(#arrow)"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-relation-endpoint="start" cx="${startX}" cy="${y}" r="6"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-relation-endpoint="end" cx="${endRelationX}" cy="${y}" r="6"/><text x="${(startX + endRelationX) / 2}" y="${y - 8}" text-anchor="middle">${escapeXml(`${relation.name}${requirement}`)}</text></g>`;
+    const connectorsFor = (endpoint, transitionIds) => transitionIds.map((transitionId) => {
+      const transition = transitionById.get(transitionId);
+      if (!transition) return '';
+      const x = markerX.get(transition.markerId);
+      const signalY = signalYById.get(transition.signalId);
+      if (!Number.isFinite(x) || !Number.isFinite(signalY)) return '';
+      return `<line class="timing-connector ${endpoint}" data-transition-id="${escapeXml(transition.id)}" x1="${x}" x2="${x}" y1="${y}" y2="${signalY}"/><circle class="timing-connection-mark ${endpoint}" data-transition-id="${escapeXml(transition.id)}" cx="${x}" cy="${signalY}" r="4" fill="currentColor"/>`;
+    }).join('');
+    const connectors = connectorsFor('start', relation.startTransitionIds) + connectorsFor('end', relation.endTransitionIds);
+    return `<g class="relation-lane timing" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-timing-position="${position}" data-relation-y="${y}">${connectors}<line class="relation-drag-target" x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}"/><line class="relation-arrow" x1="${startX}" x2="${endRelationX}" y1="${y}" y2="${y}" marker-start="url(#arrow)" marker-end="url(#arrow)"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-relation-endpoint="start" cx="${startX}" cy="${y}" r="6"/><circle class="relation-endpoint" data-relation-id="${escapeXml(relation.id)}" data-relation-kind="timing" data-relation-endpoint="end" cx="${endRelationX}" cy="${y}" r="6"/><text x="${(startX + endRelationX) / 2}" y="${y - 8}" text-anchor="middle">${escapeXml(`${relation.name}${requirement}`)}</text></g>`;
   }).join('');
 
   const annotations = document.semantic.annotations.map((annotation, index) =>
@@ -124,7 +134,7 @@ export function renderSvg(document, { draft = false } = {}) {
   ).join('');
   const watermark = draft ? `<g class="draft-watermark"><text x="${width / 2}" y="${height / 2}" text-anchor="middle">DRAFT / INVALID</text></g>` : '';
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.timing .timing-connector,.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}</svg>`;
 }
 
 function loadSvgImage(source) {

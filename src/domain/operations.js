@@ -1,5 +1,10 @@
 import { ANNOTATION_ANCHOR_TYPES, SIGNAL_TYPES, STATES } from './constants.js';
 import { cloneDocument, createId, getSignal } from './document.js';
+import {
+  assertTimingEndpoints,
+  resolveTimingEndpoint,
+  timingParameterReferencesTransition
+} from './timing-endpoints.js';
 
 function markerSequence(document, markerId) {
   if (markerId === document.semantic.timeline.startMarkerId) return Number.NEGATIVE_INFINITY;
@@ -28,6 +33,31 @@ function removeUnusedMarkers(document) {
   document.semantic.timeline.timeMarkers = document.semantic.timeline.timeMarkers
     .filter((marker) => marker.transitionIds.length > 0)
     .sort((left, right) => left.sequence - right.sequence);
+}
+
+function assertAllTimingEndpoints(document) {
+  for (const parameter of document.semantic.timingParameters) {
+    assertTimingEndpoints(document, parameter.startTransitionIds, parameter.endTransitionIds);
+  }
+}
+
+function assertAllRelationEndpoints(document) {
+  assertAllTimingEndpoints(document);
+  for (const phase of document.semantic.phases) {
+    assertOrderedEndpoints(document, phase.startTransitionId, phase.endTransitionId);
+  }
+}
+
+function assertTransitionCanLeaveTimingEndpoint(document, transitionId, targetSequence) {
+  const transition = document.semantic.transitions.find((item) => item.id === transitionId);
+  if (!transition || markerSequence(document, transition.markerId) === targetSequence) return;
+  const splitsEndpoint = document.semantic.timingParameters.some((parameter) =>
+    (parameter.startTransitionIds.includes(transitionId) && parameter.startTransitionIds.length > 1) ||
+    (parameter.endTransitionIds.includes(transitionId) && parameter.endTransitionIds.length > 1)
+  );
+  if (splitsEndpoint) {
+    throw new Error('Move the timing endpoint selection before splitting its synchronous transitions.');
+  }
 }
 
 function rederiveSignalTransitions(document, signalId, forcedIdsByMarkerId = new Map()) {
@@ -155,7 +185,7 @@ export function deleteSignal(document, signalId) {
     .filter((transition) => transition.signalId === signalId)
     .map((transition) => transition.id));
   const parameterIds = new Set(next.semantic.timingParameters
-    .filter((parameter) => transitionIds.has(parameter.startTransitionId) || transitionIds.has(parameter.endTransitionId))
+    .filter((parameter) => [...transitionIds].some((transitionId) => timingParameterReferencesTransition(parameter, transitionId)))
     .map((parameter) => parameter.id));
   const phaseIds = new Set(next.semantic.phases
     .filter((phase) => transitionIds.has(phase.startTransitionId) || transitionIds.has(phase.endTransitionId))
@@ -253,10 +283,13 @@ export function moveTransition(document, { transitionId, targetSequence }) {
   const currentSequence = markerSequence(next, transition.markerId);
   if (currentSequence === targetSequence) return next;
 
+  assertTransitionCanLeaveTimingEndpoint(document, transitionId, targetSequence);
+
   const targetMarker = ensureMarker(next, targetSequence);
   left.endMarkerId = targetMarker.id;
   right.startMarkerId = targetMarker.id;
   rederiveSignalTransitions(next, transition.signalId, new Map([[targetMarker.id, transitionId]]));
+  assertAllRelationEndpoints(next);
   return next;
 }
 
@@ -271,6 +304,7 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
   if (!getSignal(document, targetSignalId)) throw new Error('Signal does not exist.');
   const targetRightState = rightState ?? source.toState;
   if (!STATES.includes(targetRightState)) throw new Error(`Unsupported signal state: ${targetRightState}`);
+  assertTransitionCanLeaveTimingEndpoint(document, transitionId, targetSequence);
 
   if (targetSignalId !== source.signalId) {
     const next = cloneDocument(document);
@@ -306,6 +340,7 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
     const insertionIndex = next.semantic.stateSegments.findIndex((segment) => segment.id === target.id);
     next.semantic.stateSegments.splice(insertionIndex + 1, 0, rightTargetSegment);
     rederiveSignalTransitions(next, targetSignalId, new Map([[marker.id, transitionId]]));
+    assertAllRelationEndpoints(next);
     return next;
   }
 
@@ -328,6 +363,7 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
 
   right.state = targetRightState;
   rederiveSignalTransitions(next, transition.signalId, new Map([[transition.markerId, transitionId]]));
+  assertAllTimingEndpoints(next);
   return next;
 }
 
@@ -367,12 +403,13 @@ export function moveMarker(document, { markerId, targetSequence }) {
   }
   const orphan = next.semantic.timeline.timeMarkers.find((marker) => marker.id === markerId);
   if (orphan && !orphan.transitionIds.some((id) => !sourceTransitionIds.has(id))) removeUnusedMarkers(next);
+  assertAllRelationEndpoints(next);
   return next;
 }
 
 export function getTransitionDependencies(document, transitionId) {
   return {
-    timingParameters: document.semantic.timingParameters.filter((item) => item.startTransitionId === transitionId || item.endTransitionId === transitionId),
+    timingParameters: document.semantic.timingParameters.filter((item) => timingParameterReferencesTransition(item, transitionId)),
     phases: document.semantic.phases.filter((item) => item.startTransitionId === transitionId || item.endTransitionId === transitionId)
   };
 }
@@ -390,12 +427,21 @@ export function deleteTransitionWithDependencies(document, transitionId, { casca
     !(annotation.anchorType === 'transition' && annotation.anchorId === transitionId)
   );
   if (cascade) {
-    next.semantic.timingParameters = next.semantic.timingParameters.filter((item) => item.startTransitionId !== transitionId && item.endTransitionId !== transitionId);
+    const deletedParameterIds = new Set();
+    for (const parameter of next.semantic.timingParameters) {
+      if (!timingParameterReferencesTransition(parameter, transitionId)) continue;
+      parameter.startTransitionIds = parameter.startTransitionIds.filter((id) => id !== transitionId);
+      parameter.endTransitionIds = parameter.endTransitionIds.filter((id) => id !== transitionId);
+      if (parameter.startTransitionIds.length === 0 || parameter.endTransitionIds.length === 0) {
+        deletedParameterIds.add(parameter.id);
+      }
+    }
+    next.semantic.timingParameters = next.semantic.timingParameters.filter((item) => !deletedParameterIds.has(item.id));
     next.semantic.phases = next.semantic.phases.filter((item) => item.startTransitionId !== transitionId && item.endTransitionId !== transitionId);
     next.presentation.timingLaneOrder = next.presentation.timingLaneOrder.filter((id) =>
       next.semantic.timingParameters.some((item) => item.id === id) || next.semantic.phases.some((item) => item.id === id)
     );
-    const parameterIds = new Set(dependencies.timingParameters.map((item) => item.id));
+    const parameterIds = deletedParameterIds;
     const phaseIds = new Set(dependencies.phases.map((item) => item.id));
     next.semantic.annotations = next.semantic.annotations.filter((annotation) =>
       !(annotation.anchorType === 'timingParameter' && parameterIds.has(annotation.anchorId)) &&
@@ -411,6 +457,7 @@ export function deleteTransitionWithDependencies(document, transitionId, { casca
   next.semantic.stateSegments = next.semantic.stateSegments.filter((segment) => segment.id !== right.id);
   coalesceSignalSegments(next, nextTransition.signalId);
   rederiveSignalTransitions(next, nextTransition.signalId);
+  assertAllTimingEndpoints(next);
   return { document: next, dependencies, deleted: true };
 }
 
@@ -435,20 +482,20 @@ function timingNoteMetadata() {
 
 export function addTimingParameter(document, {
   name,
-  startTransitionId,
-  endTransitionId,
+  startTransitionIds,
+  endTransitionIds,
   requirementText = '',
   tags = []
 }) {
   if (!name?.trim()) throw new Error('Timing parameter name is required.');
-  assertOrderedEndpoints(document, startTransitionId, endTransitionId);
+  assertTimingEndpoints(document, startTransitionIds, endTransitionIds);
   const noteMetadata = timingNoteMetadata();
   const next = cloneDocument(document);
   const parameter = {
     id: createId('tp'),
     name: name.trim(),
-    startTransitionId,
-    endTransitionId,
+    startTransitionIds: [...startTransitionIds],
+    endTransitionIds: [...endTransitionIds],
     requirementText,
     ...noteMetadata,
     tags: [...tags]
@@ -470,7 +517,7 @@ export function setTimingParameterPosition(document, { parameterId, position }) 
   }
   const next = cloneDocument(document);
   next.presentation.timingParameterPositions ??= {};
-  next.presentation.timingParameterPositions[parameterId] = Math.round(normalizedPosition * 1000) / 1000;
+  next.presentation.timingParameterPositions[parameterId] = Math.round(normalizedPosition * 1_000_000) / 1_000_000;
   return next;
 }
 
@@ -478,20 +525,34 @@ export function updateTimingParameter(document, parameterId, updates) {
   const current = document.semantic.timingParameters.find((item) => item.id === parameterId);
   if (!current) throw new Error('Timing parameter does not exist.');
   if (updates.name !== undefined && !updates.name.trim()) throw new Error('Timing parameter name is required.');
-  const startTransitionId = updates.startTransitionId ?? current.startTransitionId;
-  const endTransitionId = updates.endTransitionId ?? current.endTransitionId;
-  assertOrderedEndpoints(document, startTransitionId, endTransitionId);
+  const startTransitionIds = updates.startTransitionIds ?? current.startTransitionIds;
+  const endTransitionIds = updates.endTransitionIds ?? current.endTransitionIds;
+  assertTimingEndpoints(document, startTransitionIds, endTransitionIds);
   const requirementText = updates.requirementText ?? current.requirementText;
   const noteMetadata = timingNoteMetadata();
   const next = cloneDocument(document);
   const parameter = next.semantic.timingParameters.find((item) => item.id === parameterId);
   parameter.name = updates.name === undefined ? parameter.name : updates.name.trim();
-  parameter.startTransitionId = startTransitionId;
-  parameter.endTransitionId = endTransitionId;
+  parameter.startTransitionIds = [...startTransitionIds];
+  parameter.endTransitionIds = [...endTransitionIds];
   parameter.requirementText = requirementText;
   parameter.parsedRequirement = noteMetadata.parsedRequirement;
   parameter.validationStatus = noteMetadata.validationStatus;
   if (updates.tags !== undefined) parameter.tags = [...updates.tags];
+  return next;
+}
+
+export function rebindTimingEndpoint(document, { parameterId, endpoint, transitionId }) {
+  if (!['start', 'end'].includes(endpoint)) throw new Error('Timing endpoint must be start or end.');
+  const parameter = document.semantic.timingParameters.find((item) => item.id === parameterId);
+  const target = document.semantic.transitions.find((item) => item.id === transitionId);
+  if (!parameter || !target) throw new Error('Timing endpoint or transition does not exist.');
+
+  const key = endpoint === 'start' ? 'startTransitionIds' : 'endTransitionIds';
+  const current = resolveTimingEndpoint(document, parameter[key], `${endpoint} endpoint`);
+  const ids = current.markerId === target.markerId ? parameter[key] : [transitionId];
+  const next = updateTimingParameter(document, parameterId, { [key]: ids });
+  assertAllTimingEndpoints(next);
   return next;
 }
 

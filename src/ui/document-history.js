@@ -1,4 +1,5 @@
 import { cloneDocument } from '../domain/document.js';
+import { loadDocumentJson } from '../domain/import-export.js';
 
 export const HISTORY_STORAGE_KEY = 'memorywaveform-designer.history.v1';
 
@@ -28,7 +29,15 @@ export function appendHistoryEntry(history, entry) {
 export function selectHistoryEntry(history, entryId) {
   const entry = history.entries.find((item) => item.id === entryId);
   if (!entry) throw new Error('History document was not found.');
-  return { history: { activeId: entryId, entries: history.entries.map(cloneEntry) }, snapshot: cloneDocument(entry.snapshot) };
+  const outcome = loadDocumentJson(JSON.stringify(entry.snapshot));
+  const document = cloneDocument(outcome.document);
+  return {
+    ...outcome,
+    document,
+    snapshot: cloneDocument(document),
+    repairText: JSON.stringify(document, null, 2),
+    history: { activeId: entryId, entries: history.entries.map(cloneEntry) }
+  };
 }
 
 export function loadHistory(storage, fallbackEntry) {
@@ -36,8 +45,9 @@ export function loadHistory(storage, fallbackEntry) {
     const raw = storage?.getItem?.(HISTORY_STORAGE_KEY);
     if (!raw) return { history: createHistoryState(fallbackEntry), notice: '' };
     const parsed = JSON.parse(raw);
-    if (!parsed?.activeId || !Array.isArray(parsed.entries) || !parsed.entries.some((entry) => entry?.id === parsed.activeId && entry?.snapshot)) throw new Error('Malformed history');
-    return { history: { activeId: parsed.activeId, entries: parsed.entries.map(cloneEntry) }, notice: '' };
+    if (!parsed?.activeId || !Array.isArray(parsed.entries) || !parsed.entries.some((entry) => entry?.id === parsed.activeId && Object.prototype.hasOwnProperty.call(entry, 'snapshot'))) throw new Error('Malformed history');
+    const entries = parsed.entries.map(cloneEntry);
+    return { history: { activeId: parsed.activeId, entries }, notice: '' };
   } catch {
     return { history: createHistoryState(fallbackEntry), notice: 'Saved document history could not be read; a new history was started.' };
   }
