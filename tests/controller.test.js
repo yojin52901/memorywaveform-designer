@@ -488,6 +488,16 @@ function timingDragHarness(contract, surface) {
   const { document, parameterId, timingGroup: group } = contract;
   const attributes = new Map();
   group.attributes = attributes;
+  const anchoredNodes = [
+    { className: 'timing-connector start', tagName: 'LINE', values: new Map([['y1', '80'], ['y2', '104']]) },
+    { className: 'timing-connection-mark start', tagName: 'CIRCLE', values: new Map([['cy', '104']]) }
+  ].map((node) => ({
+    ...node,
+    classList: { contains: (name) => node.className.split(/\s+/).includes(name) },
+    getAttribute: (name) => node.values.get(name) ?? null,
+    setAttribute: (name, value) => node.values.set(name, String(value))
+  }));
+  group.querySelectorAll = (selector) => selector === '.timing-connector, .timing-connection-mark' ? anchoredNodes : [];
   const svg = eventNode();
   svg.dataset = { timingTopY: '64', timingBottomY: '144' };
   svg.viewBox = { baseVal: { width: 860, height: 300 } };
@@ -526,8 +536,24 @@ function timingDragHarness(contract, surface) {
     preventDefault() {},
     stopPropagation() {}
   });
-  return { attributes, group, notices, parameterId, pointer, renderCount: () => renderCount, state, surface, svg };
+  return { anchoredNodes, attributes, group, notices, parameterId, pointer, renderCount: () => renderCount, state, surface, svg };
 }
+
+test('timing drag preview keeps connector transition anchors fixed while the arrow moves', () => {
+  const contract = renderedTimingContract();
+  const harness = timingDragHarness(contract, contract.surfaces[0].node);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(80));
+  harness.svg.dispatch('pointermove', harness.pointer(100));
+  harness.svg.dispatch('pointermove', harness.pointer(124));
+
+  const connector = harness.anchoredNodes.find((node) => node.classList.contains('timing-connector'));
+  const mark = harness.anchoredNodes.find((node) => node.classList.contains('timing-connection-mark'));
+  const translatedBy = 44;
+  assert.equal(Number(connector.getAttribute('y1')) + translatedBy, 124, 'connector arrow end follows the preview');
+  assert.equal(Number(connector.getAttribute('y2')) + translatedBy, 104, 'connector transition end stays anchored');
+  assert.equal(Number(mark.getAttribute('cy')) + translatedBy, 104, 'transition mark stays anchored');
+});
 
 test('createEditor timing drag lifecycle commits the final preview from each rendered timing surface', () => {
   const contract = renderedTimingContract();

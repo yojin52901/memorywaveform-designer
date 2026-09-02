@@ -384,12 +384,19 @@ export function bindCanvasPointerEvents(svg, {
       };
     } else if (timingRelation) {
       const storedPosition = state.document.presentation?.timingParameterPositions?.[timingRelation.dataset.relationId];
+      const transitionAnchors = [...timingRelation.querySelectorAll('.timing-connector, .timing-connection-mark')]
+        .map((element) => {
+          const attribute = element.classList.contains('timing-connector') ? 'y2' : 'cy';
+          return { element, attribute, value: Number(element.getAttribute(attribute)) };
+        })
+        .filter((anchor) => Number.isFinite(anchor.value));
       state.drag = {
         kind: 'timing-position',
         id: timingRelation.dataset.relationId,
         originalY: Number(timingRelation.dataset.relationY),
         grabOffsetY: pointerSvgY(svg, event) - Number(timingRelation.dataset.relationY),
-        position: Number.isFinite(storedPosition) ? storedPosition : Number(timingRelation.dataset.timingPosition)
+        position: Number.isFinite(storedPosition) ? storedPosition : Number(timingRelation.dataset.timingPosition),
+        transitionAnchors
       };
     } else if (transition && state.relationCreation) {
       state.drag = { kind: 'relation-creation' };
@@ -415,7 +422,11 @@ export function bindCanvasPointerEvents(svg, {
       const bottom = Number(svg.dataset.timingBottomY);
       const previewY = top + (bottom - top) * position;
       const timingRelation = svg.querySelector(`[data-relation-kind="timing"][data-relation-id="${state.drag.id}"]`);
-      timingRelation?.setAttribute('transform', `translate(0 ${previewY - state.drag.originalY})`);
+      const translation = previewY - state.drag.originalY;
+      timingRelation?.setAttribute('transform', `translate(0 ${translation})`);
+      state.drag.transitionAnchors.forEach(({ element, attribute, value }) => {
+        element.setAttribute(attribute, String(value - translation));
+      });
       if (status) status.textContent = dragMessage(state.drag, position);
     } else if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
       status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event));
