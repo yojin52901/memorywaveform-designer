@@ -96,6 +96,15 @@ test('renders connectors and connection marks for every timing endpoint member',
   assert.ok(svg.indexOf('class="signal-row"') < svg.indexOf('class="relation-lane timing"'));
 });
 
+test('renders vertical timing connectors in light gray while timing controls stay blue', () => {
+  const svg = renderSvg(waveformWithTiming());
+
+  assert.match(svg, /\.relation-lane\.timing \.timing-connector\{(?=[^}]*stroke:#cbd3df)(?=[^}]*pointer-events:none)[^}]*\}/);
+  assert.match(svg, /\.relation-lane\{color:#245c9f\}/);
+  assert.match(svg, /class="relation-arrow"/);
+  assert.match(svg, /class="timing-connection-mark (?:start|end)"[^>]*fill="currentColor"/);
+});
+
 test('renders a clear draft watermark only when requested', () => {
   const document = waveformWithTiming();
 

@@ -255,7 +255,7 @@ test('signal move controls follow the current presentation order', () => {
   const moved = moveSignalRow(second, { signalId: weId, targetIndex: 1 });
 
   const markup = renderInspectorMarkup(moved);
-  const editors = [...markup.matchAll(/<details class="relation-editor signal-editor">[\s\S]*?<\/details>/g)].map((match) => match[0]);
+  const editors = [...markup.matchAll(/<details class="relation-editor signal-editor"[^>]*>[\s\S]*?<\/details>/g)].map((match) => match[0]);
   const ceEditor = editors.find((editor) => editor.includes(`value="${ceId}"`)) ?? '';
   const weEditor = editors.find((editor) => editor.includes(`value="${weId}"`)) ?? '';
 
@@ -266,14 +266,39 @@ test('signal move controls follow the current presentation order', () => {
   assert.match(weEditor, /data-signal-move="1"[^>]*disabled/);
 });
 
+test('createEditor keeps the moved signal open for consecutive row moves', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'OE#', type: 'control', initialState: 'HIGH' });
+  const [weId, ceId, oeId] = document.presentation.signalRowOrder;
+  const root = fakeEditorRoot(historyPayload(document));
+  const app = createEditor(root);
+  const inspector = root.elements['#inspector'];
+  inspector.querySelectorAll = (selector) => selector === 'details.signal-editor[open][data-signal-editor-id]'
+    ? [{ dataset: { signalEditorId: weId } }]
+    : [];
+  const move = (direction) => inspector.dispatch('click', {
+    target: { id: '', dataset: { signalMove: String(direction), signalId: weId } }
+  });
+
+  move(1);
+  move(1);
+
+  assert.deepEqual(app.getState().document.presentation.signalRowOrder, [ceId, oeId, weId]);
+  const movedEditor = inspector.innerHTML.match(new RegExp(`<details class="relation-editor signal-editor"[^>]*data-signal-editor-id="${weId}"[^>]*open[\\s\\S]*?<\\/details>`))?.[0] ?? '';
+  assert.notEqual(movedEditor, '');
+  assert.doesNotMatch(movedEditor, /data-signal-move="-1"[^>]*disabled/);
+  assert.match(movedEditor, /data-signal-move="1"[^>]*disabled/);
+});
+
 test('each signal editor is independently collapsed by default', () => {
   const first = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
   const document = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
 
   const markup = renderInspectorMarkup(document);
 
-  assert.equal((markup.match(/<details class="relation-editor signal-editor">/g) ?? []).length, 2);
-  assert.doesNotMatch(markup, /<details class="relation-editor signal-editor" open/);
+  assert.equal((markup.match(/<details class="relation-editor signal-editor" data-signal-editor-id="[^"]+">/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /data-signal-editor-id="[^"]+" open/);
   assert.match(markup, /<summary>WE# · signal<\/summary>/);
   assert.match(markup, /<summary>CE# · signal<\/summary>/);
   assert.equal((markup.match(/data-form="signal-edit"/g) ?? []).length, 2);

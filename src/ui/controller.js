@@ -215,7 +215,7 @@ export function timingPositionFromPointer(svg, event, { grabOffsetY = 0 } = {}) 
   return Math.max(0, Math.min(1, (y - top) / (bottom - top)));
 }
 
-export function renderInspectorMarkup(documentModel, selectedTransitionId = null) {
+export function renderInspectorMarkup(documentModel, selectedTransitionId = null, { openSignalEditorIds = [] } = {}) {
   const selected = documentModel.semantic.transitions.find((transition) => transition.id === selectedTransitionId);
   const dependencies = selected ? getTransitionDependencies(documentModel, selected.id) : null;
   const markersById = new Map(documentModel.semantic.timeline.timeMarkers.map((marker) => [marker.id, marker]));
@@ -226,9 +226,10 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
     ...presentedSignalIds.map((id) => signalsById.get(id)),
     ...documentModel.semantic.signals.filter((signal) => !presentedSignalIds.includes(signal.id))
   ];
+  const openSignalIds = new Set(openSignalEditorIds);
   const signalOptions = orderedSignals.map((signal) => option(signal.id, signal.name, signal.id === selected?.signalId)).join('');
   const signalEditors = orderedSignals.map((signal, index) => `
-    <details class="relation-editor signal-editor">
+    <details class="relation-editor signal-editor" data-signal-editor-id="${escapeHtml(signal.id)}"${openSignalIds.has(signal.id) ? ' open' : ''}>
       <summary>${escapeHtml(signal.name)} · signal</summary>
       <form class="tool-form" data-form="signal-edit">
         <input type="hidden" name="signalId" value="${escapeHtml(signal.id)}" />
@@ -529,6 +530,8 @@ export function createEditor(root = document) {
   }
 
   function renderInspector() {
+    const openSignalEditorIds = [...inspector.querySelectorAll('details.signal-editor[open][data-signal-editor-id]')]
+      .map((element) => element.dataset.signalEditorId);
     if (state.mode === 'repair') {
       const errors = state.validation?.errors ?? ['Unknown import error.'];
       const documentModel = state.document;
@@ -555,7 +558,7 @@ export function createEditor(root = document) {
       inspector.innerHTML = `<h2>Validation errors</h2><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol><h3>Objects received</h3><div class="repair-object-list">${repairObjects.map(([key]) => `<button type="button" class="button secondary" data-repair-object="${escapeHtml(key)}">${escapeHtml(key)}</button>`).join('') || '<p class="muted">No structured object could be parsed.</p>'}</div><h3>Selected properties</h3><pre class="repair-properties">${escapeHtml(JSON.stringify(selectedObject, null, 2))}</pre>`;
       return;
     }
-    inspector.innerHTML = renderInspectorMarkup(state.document, state.selectedTransitionId);
+    inspector.innerHTML = renderInspectorMarkup(state.document, state.selectedTransitionId, { openSignalEditorIds });
   }
 
   function dragMessage(drag, targetSequence = null) {
