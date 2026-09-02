@@ -281,14 +281,17 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
   }).join('');
   return `
     <h2>Document</h2>
-    <form class="tool-form" data-form="metadata">
-      <label>Title<input name="title" value="${escapeHtml(documentModel.metadata.title)}" required /></label>
-      <label>Operation<input name="operation" value="${escapeHtml(documentModel.metadata.operation)}" /></label>
-      <label>Description<textarea name="description">${escapeHtml(documentModel.metadata.description)}</textarea></label>
-      <label>Memory technology<input name="memoryTechnology" value="${escapeHtml(documentModel.metadata.memoryTechnology)}" /></label>
-      <label>Tags<input name="tags" value="${escapeHtml(documentModel.metadata.tags.join(', '))}" /></label>
-      <button class="button secondary" type="submit">Save metadata</button>
-    </form>
+    <details class="metadata-editor">
+      <summary>Document metadata</summary>
+      <form class="tool-form" data-form="metadata">
+        <label>Title<input name="title" value="${escapeHtml(documentModel.metadata.title)}" required /></label>
+        <label>Operation<input name="operation" value="${escapeHtml(documentModel.metadata.operation)}" /></label>
+        <label>Description<textarea name="description">${escapeHtml(documentModel.metadata.description)}</textarea></label>
+        <label>Memory technology<input name="memoryTechnology" value="${escapeHtml(documentModel.metadata.memoryTechnology)}" /></label>
+        <label>Tags<input name="tags" value="${escapeHtml(documentModel.metadata.tags.join(', '))}" /></label>
+        <button class="button secondary" type="submit">Save metadata</button>
+      </form>
+    </details>
     <h3>Signals</h3><div class="signal-editor-list">${signalEditors || '<p class="muted">No signals yet.</p>'}</div>
     <h3>Timing parameters</h3><div class="relation-editor-list">${timingEditors || '<p class="muted">No timing parameters yet.</p>'}</div>
     <h3>Phases</h3><div class="relation-editor-list">${phaseEditors || '<p class="muted">No phases yet.</p>'}</div>

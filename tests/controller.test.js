@@ -304,6 +304,18 @@ test('each signal editor is independently collapsed by default', () => {
   assert.equal((markup.match(/data-form="signal-edit"/g) ?? []).length, 2);
 });
 
+test('document metadata editor is collapsed by default while retaining its form', () => {
+  const markup = renderInspectorMarkup(createDocument({ title: 'Program' }));
+  const metadataEditor = markup.match(/<details class="metadata-editor">[\s\S]*?<\/details>/)?.[0] ?? '';
+
+  assert.notEqual(metadataEditor, '');
+  assert.doesNotMatch(metadataEditor, /<details class="metadata-editor" open/);
+  assert.match(metadataEditor, /<summary>Document metadata<\/summary>/);
+  assert.match(metadataEditor, /<form class="tool-form" data-form="metadata">/);
+  assert.match(metadataEditor, /name="title" value="Program" required/);
+  assert.match(metadataEditor, />Save metadata<\/button>/);
+});
+
 test('history and every authoring tool are independently collapsed by default', () => {
   const document = createDocument({ title: 'Program' });
   const history = {
