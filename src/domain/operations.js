@@ -48,16 +48,42 @@ function assertAllRelationEndpoints(document) {
   }
 }
 
-function assertTransitionCanLeaveTimingEndpoint(document, transitionId, targetSequence) {
-  const transition = document.semantic.transitions.find((item) => item.id === transitionId);
-  if (!transition || markerSequence(document, transition.markerId) === targetSequence) return;
-  const splitsEndpoint = document.semantic.timingParameters.some((parameter) =>
-    (parameter.startTransitionIds.includes(transitionId) && parameter.startTransitionIds.length > 1) ||
-    (parameter.endTransitionIds.includes(transitionId) && parameter.endTransitionIds.length > 1)
-  );
-  if (splitsEndpoint) {
-    throw new Error('Move the timing endpoint selection before splitting its synchronous transitions.');
+function normalizeRelationDirections(document) {
+  for (const parameter of document.semantic.timingParameters) {
+    const start = resolveTimingEndpoint(document, parameter.startTransitionIds, 'Start endpoint');
+    const end = resolveTimingEndpoint(document, parameter.endTransitionIds, 'End endpoint');
+    if (start.sequence === end.sequence) throw new Error('Timing endpoints must be strictly left-to-right.');
+    if (start.sequence > end.sequence) {
+      [parameter.startTransitionIds, parameter.endTransitionIds] = [parameter.endTransitionIds, parameter.startTransitionIds];
+    }
   }
+  for (const phase of document.semantic.phases) {
+    const startSequence = transitionSequence(document, phase.startTransitionId);
+    const endSequence = transitionSequence(document, phase.endTransitionId);
+    if (startSequence === endSequence) throw new Error('Relation endpoints must be distinct and strictly left-to-right.');
+    if (startSequence > endSequence) {
+      [phase.startTransitionId, phase.endTransitionId] = [phase.endTransitionId, phase.startTransitionId];
+    }
+  }
+}
+
+function timingEndpointMoveGroup(document, transitionId) {
+  const transitionIds = new Set([transitionId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const parameter of document.semantic.timingParameters) {
+      for (const endpointIds of [parameter.startTransitionIds, parameter.endTransitionIds]) {
+        if (!endpointIds.some((id) => transitionIds.has(id))) continue;
+        for (const id of endpointIds) {
+          if (transitionIds.has(id)) continue;
+          transitionIds.add(id);
+          grew = true;
+        }
+      }
+    }
+  }
+  return [...transitionIds]
 }
 
 function rederiveSignalTransitions(document, signalId, forcedIdsByMarkerId = new Map()) {
@@ -272,23 +298,40 @@ export function moveTransition(document, { transitionId, targetSequence }) {
   if (!source) throw new Error('Transition does not exist.');
   if (!Number.isInteger(targetSequence)) throw new Error('Marker sequence must be an integer.');
 
-  const next = cloneDocument(document);
-  const transition = next.semantic.transitions.find((item) => item.id === transitionId);
-  const { left, right } = segmentPairForTransition(next, transition);
-  const start = markerSequence(next, left.startMarkerId);
-  const end = markerSequence(next, right.endMarkerId);
-  if (!(start < targetSequence && targetSequence < end)) {
-    throw new Error('Transition must remain between its adjacent segment boundaries.');
+  const groupedTransitionIds = timingEndpointMoveGroup(document, transitionId);
+  const groupedTransitions = groupedTransitionIds.map((id) => document.semantic.transitions.find((transition) => transition.id === id));
+  if (groupedTransitions.some((transition) => !transition)) throw new Error('Timing endpoint references a missing transition.');
+  const currentSequences = new Set(groupedTransitions.map((transition) => markerSequence(document, transition.markerId)));
+  if (currentSequences.size !== 1) throw new Error('Timing endpoint transitions must share one order slot.');
+  if (currentSequences.has(targetSequence)) return cloneDocument(document);
+
+  const existingTarget = document.semantic.timeline.timeMarkers.find((marker) => marker.sequence === targetSequence);
+  const targetSignalIds = new Set((existingTarget?.transitionIds ?? [])
+    .map((id) => document.semantic.transitions.find((transition) => transition.id === id)?.signalId)
+    .filter(Boolean));
+  if (groupedTransitions.some((transition) => targetSignalIds.has(transition.signalId))) {
+    throw new Error('A transition cannot merge with another transition from the same signal.');
   }
-  const currentSequence = markerSequence(next, transition.markerId);
-  if (currentSequence === targetSequence) return next;
+  for (const transition of groupedTransitions) {
+    const { left, right } = segmentPairForTransition(document, transition);
+    if (!(markerSequence(document, left.startMarkerId) < targetSequence && targetSequence < markerSequence(document, right.endMarkerId))) {
+      throw new Error('Transition must remain between its adjacent segment boundaries.');
+    }
+  }
 
-  assertTransitionCanLeaveTimingEndpoint(document, transitionId, targetSequence);
-
+  const next = cloneDocument(document);
   const targetMarker = ensureMarker(next, targetSequence);
-  left.endMarkerId = targetMarker.id;
-  right.startMarkerId = targetMarker.id;
-  rederiveSignalTransitions(next, transition.signalId, new Map([[targetMarker.id, transitionId]]));
+  for (const groupedTransitionId of groupedTransitionIds) {
+    const transition = next.semantic.transitions.find((item) => item.id === groupedTransitionId);
+    const { left, right } = segmentPairForTransition(next, transition);
+    left.endMarkerId = targetMarker.id;
+    right.startMarkerId = targetMarker.id;
+  }
+  for (const groupedTransitionId of groupedTransitionIds) {
+    const transition = next.semantic.transitions.find((item) => item.id === groupedTransitionId);
+    rederiveSignalTransitions(next, transition.signalId, new Map([[targetMarker.id, transition.id]]));
+  }
+  normalizeRelationDirections(next);
   assertAllRelationEndpoints(next);
   return next;
 }
@@ -304,10 +347,13 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
   if (!getSignal(document, targetSignalId)) throw new Error('Signal does not exist.');
   const targetRightState = rightState ?? source.toState;
   if (!STATES.includes(targetRightState)) throw new Error(`Unsupported signal state: ${targetRightState}`);
-  assertTransitionCanLeaveTimingEndpoint(document, transitionId, targetSequence);
+  const documentAtTargetSequence = targetSequence === currentSequence
+    ? document
+    : moveTransition(document, { transitionId, targetSequence });
+  const transitionAtTargetSequence = documentAtTargetSequence.semantic.transitions.find((transition) => transition.id === transitionId);
 
-  if (targetSignalId !== source.signalId) {
-    const next = cloneDocument(document);
+  if (targetSignalId !== transitionAtTargetSequence.signalId) {
+    const next = cloneDocument(documentAtTargetSequence);
     const transition = next.semantic.transitions.find((item) => item.id === transitionId);
     const { left, right } = segmentPairForTransition(next, transition);
     left.endMarkerId = right.endMarkerId;
@@ -340,13 +386,12 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
     const insertionIndex = next.semantic.stateSegments.findIndex((segment) => segment.id === target.id);
     next.semantic.stateSegments.splice(insertionIndex + 1, 0, rightTargetSegment);
     rederiveSignalTransitions(next, targetSignalId, new Map([[marker.id, transitionId]]));
+    normalizeRelationDirections(next);
     assertAllRelationEndpoints(next);
     return next;
   }
 
-  let next = targetSequence === currentSequence
-    ? cloneDocument(document)
-    : moveTransition(document, { transitionId, targetSequence });
+  const next = cloneDocument(documentAtTargetSequence);
 
   const transition = next.semantic.transitions.find((item) => item.id === transitionId);
   const { left, right } = segmentPairForTransition(next, transition);
@@ -363,7 +408,8 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
 
   right.state = targetRightState;
   rederiveSignalTransitions(next, transition.signalId, new Map([[transition.markerId, transitionId]]));
-  assertAllTimingEndpoints(next);
+  normalizeRelationDirections(next);
+  assertAllRelationEndpoints(next);
   return next;
 }
 
@@ -403,6 +449,7 @@ export function moveMarker(document, { markerId, targetSequence }) {
   }
   const orphan = next.semantic.timeline.timeMarkers.find((marker) => marker.id === markerId);
   if (orphan && !orphan.transitionIds.some((id) => !sourceTransitionIds.has(id))) removeUnusedMarkers(next);
+  normalizeRelationDirections(next);
   assertAllRelationEndpoints(next);
   return next;
 }

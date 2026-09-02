@@ -19,3 +19,7 @@ _Avoid_: Arrow handle, single transition endpoint
 **Timing parameter**:
 A named interval between a start timing endpoint and an end timing endpoint. Its start order slot must precede its end order slot.
 _Avoid_: Timing lane, arrow
+
+**Coordinated transition edit**:
+An edit that preserves a transition's identity while keeping every referencing timing endpoint and phase structurally valid. Moving one member of a timing endpoint moves its complete connected synchronous selection, and relations that are crossed exchange their start and end endpoints.
+_Avoid_: Isolated transition move, broken reference repair

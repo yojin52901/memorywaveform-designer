@@ -82,6 +82,41 @@ function phaseMoveFixture() {
   return { document, startTransition, startMarkerId: startTransition.markerId, oeId: oe.id };
 }
 
+function crossingRelationFixture() {
+  let document = createDocument({ title: 'Crossing relation' });
+  document = addSignal(document, { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const [we, ce] = document.semantic.signals;
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: ce.id, sequence: 20, rightState: 'LOW' });
+  const startTransition = transitionsAt(document, 10)[0];
+  const endTransition = transitionsAt(document, 20)[0];
+  return { document, startTransition, endTransition };
+}
+
+function overlappingTimingEndpointFixture() {
+  let document = createDocument({ title: 'Overlapping timing endpoints' });
+  document = addSignal(document, { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'OE#', type: 'control', initialState: 'HIGH' });
+  const [we, ce, oe] = document.semantic.signals;
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 5, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 10, rightState: 'HIGH' });
+  document = setSegmentBoundary(document, { signalId: ce.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: oe.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 30, rightState: 'LOW' });
+  const weAt5 = transitionsAt(document, 5)[0];
+  const [weAt10, ceAt10, oeAt10] = transitionsAt(document, 10);
+  const weAt30 = transitionsAt(document, 30)[0];
+  document = addTimingParameter(document, {
+    name: 'tPrimary', startTransitionIds: [weAt10.id, ceAt10.id], endTransitionIds: [weAt30.id]
+  });
+  document = addTimingParameter(document, {
+    name: 'tDependent', startTransitionIds: [weAt5.id], endTransitionIds: [ceAt10.id, oeAt10.id]
+  });
+  return { document, weAt10, ceAt10, oeAt10 };
+}
+
 test('adding a signal creates one segment covering the whole timeline', () => {
   const next = setupSignal();
 
@@ -208,26 +243,34 @@ test('moving a phase start transition onto its end slot is rejected', () => {
   );
 });
 
-test('moving a phase start marker past its end is rejected', () => {
-  const { document, startMarkerId } = phaseMoveFixture();
+test('moving a phase marker past its end swaps phase endpoint direction', () => {
+  const { document, startTransition, startMarkerId } = phaseMoveFixture();
+  const endTransitionId = document.semantic.phases[0].endTransitionId;
 
-  assert.throws(
-    () => moveMarker(document, { markerId: startMarkerId, targetSequence: 25 }),
-    /Relation endpoints must be distinct and strictly left-to-right\./
-  );
+  const updated = moveMarker(document, { markerId: startMarkerId, targetSequence: 25 });
+
+  assert.equal(updated.semantic.phases[0].startTransitionId, endTransitionId);
+  assert.equal(updated.semantic.phases[0].endTransitionId, startTransition.id);
+  assert.equal(validateDocument(updated).valid, true);
 });
 
-test('moving a phase start to another signal past its end is rejected', () => {
+test('editing a phase start into another signal past its end swaps phase direction', () => {
   const { document, startTransition, oeId } = phaseMoveFixture();
+  const endTransitionId = document.semantic.phases[0].endTransitionId;
 
-  assert.throws(
-    () => updateTransition(document, startTransition.id, {
-      signalId: oeId,
-      sequence: 25,
-      rightState: 'UNKNOWN'
-    }),
-    /Relation endpoints must be distinct and strictly left-to-right\./
-  );
+  const updated = updateTransition(document, startTransition.id, {
+    signalId: oeId,
+    sequence: 25,
+    rightState: 'UNKNOWN'
+  });
+
+  const moved = updated.semantic.transitions.find((item) => item.id === startTransition.id);
+  assert.equal(moved.signalId, oeId);
+  assert.equal(updated.semantic.timeline.timeMarkers.find((marker) => marker.id === moved.markerId).sequence, 25);
+  assert.equal(moved.toState, 'UNKNOWN');
+  assert.equal(updated.semantic.phases[0].startTransitionId, endTransitionId);
+  assert.equal(updated.semantic.phases[0].endTransitionId, startTransition.id);
+  assert.equal(validateDocument(updated).valid, true);
 });
 
 test('dependency query is empty until timing objects reference a transition', () => {
@@ -272,27 +315,125 @@ test('rebinding within the current slot preserves the selected subset', () => {
   assert.deepEqual(updated.semantic.timingParameters[0].startTransitionIds, previousStartIds);
 });
 
-test('moving one member out of a multi-member timing endpoint is rejected', () => {
-  const { document, selectedStart } = multiEndpointFixture();
+test('moving one member moves every transition selected by the same timing endpoint', () => {
+  const { document: initial, selectedStart } = multiEndpointFixture();
+  const withExtraSignal = addSignal(initial, { name: 'UNRELATED#', type: 'control', initialState: 'HIGH' });
+  const unrelatedSignal = withExtraSignal.semantic.signals.find((signal) => signal.name === 'UNRELATED#');
+  const document = setSegmentBoundary(withExtraSignal, { signalId: unrelatedSignal.id, sequence: 10, rightState: 'LOW' });
+  const selectedIds = document.semantic.timingParameters[0].startTransitionIds;
+  const unrelatedTransition = transitionsAt(document, 10).find((transition) => transition.signalId === unrelatedSignal.id);
 
-  assert.throws(
-    () => moveTransition(document, { transitionId: selectedStart.id, targetSequence: 15 }),
-    /Move the timing endpoint selection before splitting its synchronous transitions\./
-  );
+  const updated = moveTransition(document, { transitionId: selectedStart.id, targetSequence: 15 });
+
+  const movedSequences = selectedIds.map((transitionId) => {
+    const transition = updated.semantic.transitions.find((item) => item.id === transitionId);
+    return updated.semantic.timeline.timeMarkers.find((marker) => marker.id === transition.markerId)?.sequence;
+  });
+  assert.deepEqual(movedSequences, [15, 15]);
+  assert.equal(updated.semantic.timeline.timeMarkers.find((marker) => marker.id === updated.semantic.transitions.find((transition) => transition.id === unrelatedTransition.id).markerId).sequence, 10);
+  assert.deepEqual(updated.semantic.timingParameters[0].startTransitionIds, selectedIds);
+  assert.equal(validateDocument(updated).valid, true);
 });
 
-test('updating one timing endpoint member into another slot is rejected', () => {
-  const { document, selectedStart } = multiEndpointFixture();
-  const oe = document.semantic.signals.find((item) => item.name === 'OE#');
+test('moving an overlapping timing endpoint moves its full connected selection', () => {
+  const { document, weAt10, ceAt10, oeAt10 } = overlappingTimingEndpointFixture();
+
+  const updated = moveTransition(document, { transitionId: weAt10.id, targetSequence: 15 });
+
+  for (const transitionId of [weAt10.id, ceAt10.id, oeAt10.id]) {
+    const transition = updated.semantic.transitions.find((item) => item.id === transitionId);
+    const marker = updated.semantic.timeline.timeMarkers.find((item) => item.id === transition.markerId);
+    assert.equal(marker.sequence, 15);
+  }
+  assert.equal(validateDocument(updated).valid, true);
+});
+
+test('rejecting an out-of-bounds connected timing move leaves the document untouched', () => {
+  const { document, parameterId, selectedStart } = multiEndpointFixture();
+  const annotated = addAnnotation(document, {
+    text: 'do not detach', anchorType: 'timingParameter', anchorId: parameterId
+  });
+  const before = structuredClone(annotated);
 
   assert.throws(
-    () => updateTransition(document, selectedStart.id, {
-      signalId: oe.id,
-      sequence: 15,
-      rightState: 'UNKNOWN'
-    }),
-    /Move the timing endpoint selection before splitting its synchronous transitions\./
+    () => moveTransition(annotated, { transitionId: selectedStart.id, targetSequence: 35 }),
+    /Transition must remain between its adjacent segment boundaries\./
   );
+
+  assert.deepEqual(annotated, before);
+});
+
+test('rejecting a connected timing move onto the same signal leaves the document untouched', () => {
+  const { document, selectedStart } = multiEndpointFixture();
+  const before = structuredClone(document);
+
+  assert.throws(
+    () => moveTransition(document, { transitionId: selectedStart.id, targetSequence: 30 }),
+    /A transition cannot merge with another transition from the same signal\./
+  );
+
+  assert.deepEqual(document, before);
+});
+
+test('moving a timing start past its end swaps endpoint direction', () => {
+  const { document, startTransition, endTransition } = crossingRelationFixture();
+  const withTiming = addTimingParameter(document, {
+    name: 'tCROSS', startTransitionIds: [startTransition.id], endTransitionIds: [endTransition.id]
+  });
+  const parameterId = withTiming.semantic.timingParameters[0].id;
+  const withTransitionNote = addAnnotation(withTiming, {
+    text: 'edge note', anchorType: 'transition', anchorId: startTransition.id
+  });
+  const annotated = addAnnotation(withTransitionNote, {
+    text: 'timing note', anchorType: 'timingParameter', anchorId: parameterId
+  });
+
+  const updated = moveTransition(annotated, { transitionId: startTransition.id, targetSequence: 25 });
+
+  assert.deepEqual(updated.semantic.timingParameters[0].startTransitionIds, [endTransition.id]);
+  assert.deepEqual(updated.semantic.timingParameters[0].endTransitionIds, [startTransition.id]);
+  assert.deepEqual(updated.semantic.annotations.map((annotation) => [annotation.anchorType, annotation.anchorId]), [
+    ['transition', startTransition.id],
+    ['timingParameter', parameterId]
+  ]);
+  assert.deepEqual(updated.presentation.timingLaneOrder, [parameterId]);
+  assert.equal(updated.presentation.timingParameterPositions[parameterId], 0.2);
+  assert.equal(validateDocument(updated).valid, true);
+});
+
+test('rejecting a collapsed timing interval leaves the document untouched', () => {
+  const { document, startTransition, endTransition } = crossingRelationFixture();
+  const withTiming = addTimingParameter(document, {
+    name: 'tCOLLAPSE', startTransitionIds: [startTransition.id], endTransitionIds: [endTransition.id]
+  });
+  const before = structuredClone(withTiming);
+
+  assert.throws(
+    () => moveTransition(withTiming, { transitionId: startTransition.id, targetSequence: 20 }),
+    /Timing endpoints must be strictly left-to-right\./
+  );
+
+  assert.deepEqual(withTiming, before);
+});
+
+test('editing one timing endpoint member relocates its synchronous selection', () => {
+  const { document, selectedStart } = multiEndpointFixture();
+  const oe = document.semantic.signals.find((item) => item.name === 'OE#');
+  const selectedIds = document.semantic.timingParameters[0].startTransitionIds;
+
+  const updated = updateTransition(document, selectedStart.id, {
+    signalId: oe.id,
+    sequence: 15,
+    rightState: 'UNKNOWN'
+  });
+
+  for (const transitionId of selectedIds) {
+    const transition = updated.semantic.transitions.find((item) => item.id === transitionId);
+    assert.equal(updated.semantic.timeline.timeMarkers.find((marker) => marker.id === transition.markerId).sequence, 15);
+  }
+  assert.equal(updated.semantic.transitions.find((item) => item.id === selectedStart.id).signalId, oe.id);
+  assert.equal(updated.semantic.transitions.find((item) => item.id === selectedStart.id).toState, 'UNKNOWN');
+  assert.equal(validateDocument(updated).valid, true);
 });
 
 test('reassigning one timing endpoint member to another signal at the same slot is allowed', () => {

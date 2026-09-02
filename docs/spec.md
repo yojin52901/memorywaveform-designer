@@ -81,11 +81,11 @@ Timeline 固定包含 `timelineStart` 與 `timelineEnd`。除兩個固定 bounda
 
 每個 marker 具有唯一 `sequence`，它是 transition 左到右順序的唯一真相。同 marker 的 transition 視為同步，不得捏造彼此的先後。第一版不儲存 marker 實際物理時間或 unit；不比較 marker 間距，也不從它推算 timing requirement。
 
-拖動 marker 會移動其全部 transition。拖動單一 transition 時，系統將它移至既有 marker 或建立新 marker，並同步調整該 signal 的相鄰 segment。若 marker 因此沒有任何 transition，系統移除它。無關物件的 ID 與 reference 必須保持不變。
+拖動 marker 會移動其全部 transition。拖動單一 transition 時，系統將它移至既有 marker 或建立新 marker，並同步調整該 signal 的相鄰 segment；若它屬於 timing endpoint，系統還會移動透過相同 endpoint 連通的完整 transition 群組，但不移動同 marker 的無關 transition。若 marker 因此沒有任何 transition，系統移除它。無關物件的 ID 與 reference 必須保持不變。
 
 ### Timing parameter 與 phase
 
-Timing parameter 使用非空的 `startTransitionIds` 與 `endTransitionIds` arrays。每一個 endpoint 內的所有 transition 必須屬於同一 marker／order slot，且不得重複；start marker sequence 必須嚴格早於 end marker sequence，因此兩 endpoint 不得落在同一 marker 或反向。start 與 end 的同步群組可來自多個 signal。多個 parameter 可自由重疊，也可共用任一 endpoint transition。Phase 仍使用單數的 `startTransitionId` 與 `endTransitionId`。
+Timing parameter 使用非空的 `startTransitionIds` 與 `endTransitionIds` arrays。每一個 endpoint 內的所有 transition 必須屬於同一 marker／order slot，且不得重複；start marker sequence 必須嚴格早於 end marker sequence，因此兩 endpoint 不得落在同一 marker 或反向。start 與 end 的同步群組可來自多個 signal。多個 parameter 可自由重疊，也可共用任一 endpoint transition。當 transition 或 marker 的座標編輯跨越 timing／phase 的對端時，系統會交換該 relation 的 start 與 end reference，持續維持左到右的有效區間；兩端重合或任一受影響 signal 無法放入目標 slot 時，整筆編輯會被拒絕且文件不變。Phase 仍使用單數的 `startTransitionId` 與 `endTransitionId`。
 
 Timing parameter 本體顯示在 signal waveform 的上層。水平箭頭維持已儲存的 overlay position；每個 start/end reference 都從對應箭頭端點畫一條垂直 connector 到其 signal row，並以 timing 色 target mark 標示。相同 endpoint 的 connector 共用 x 座標但可有不同 y 終點。Designer 可拖動箭頭線、label 或寬的透明 hit target，在 signal plot 的上下範圍內自由調整垂直位置；pointer-down 會保留 grab offset，所以初次移動不會跳到指標中心。此動作只更新 `presentation.timingParameterPositions` 的 `0..1` 標準化比例，不修改 endpoint 或任何工程語意。拖動圓形 endpoint 則重新綁定：拖到不同有效 slot 時該 endpoint 會重設為只包含 dropped transition；拖回目前 slot 則保留既有 subset。Signal 先 render、timing parameter、connector 與 target mark 後 render，確保關係位於 waveform 上層。
 
@@ -297,7 +297,7 @@ Validator 至少檢查：
 - 新增 signal 後以 initial state 建立完整 segment coverage；
 - 移動共享 segment boundary 時，兩側 segment 與 derived transition 一致，既有 transition ID 在可保留時不改變；
 - 同 marker transition 視為同步，marker sequence 改變後左到右順序正確；
-- 移動單一 transition 能拆出或合併 marker，且空 marker 被移除；
+- 移動單一 transition 能拆出或合併 marker，且空 marker 被移除；被 timing endpoint 引用時，完整連通群組會同步移動、無關同步 transition 維持原 slot，跨越對端後 relation 仍保持左到右；
 - timing parameter endpoint arrays 僅能包含存在、不同且同一 order slot 的 transition，且 start/end marker 必須由左至右；phase 維持單一 endpoint；
 - multi-transition endpoint 會渲染每個 reference 的垂直 connector 與 target mark；multi-member endpoint 刪除一個 reference 時保留未清空的 parameter；
 - schema `1.0` singleton timing fields 遷移為 `1.1` plural arrays，`1.1` 匯出只含 canonical plural fields；
