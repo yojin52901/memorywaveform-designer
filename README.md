@@ -16,6 +16,7 @@ Open [http://localhost:4173](http://localhost:4173). No package installation or 
 2. Add state transitions at integer order slots. A shared slot is a simultaneous marker.
 3. Create timing parameters or phases by selecting their two transition endpoints. A timing endpoint can include a non-empty checkbox subset of all synchronous transitions in one order slot; timing rules accept `>= 20 ns`, `<= 40 ns`, `= 25 ns`, and `20 ns..40 ns`.
 4. Drag a marker column to move its complete synchronous group; drag a transition point to move its complete timing-endpoint connection group while unrelated transitions remain in place. Crossing a timing or phase counterpart automatically reorients that relation left-to-right. A timing parameter draws one vertical connector per selected endpoint transition. Drag its arrow, label, or wide hit target freely up and down without changing endpoint semantics; drag a timing/phase endpoint onto a transition to rebind it.
+   To adjust visual spacing, drag the resize handle above a timeline gap. Each handle changes only that gap's displayed width; it does not move the order slot or change timing semantics.
 5. Use the inspector to update signal metadata, order rows, add annotations, or safely delete transitions/signals with their dependencies.
 6. Export JSON only after validation passes. An invalid in-progress design can still export a visibly watermarked `DRAFT / INVALID` PNG. Invalid imported JSON stays in non-rendering repair mode until it is corrected.
 

@@ -106,6 +106,8 @@ Phase 沒有 timing rule text，但同樣必須由兩個左到右的 transition 
 
 JSON 可保留選填 `presentation`，以支援回匯後的相同 review 排版，例如 signal row order、timing lane order、折疊狀態與顯示偏好。Timing parameter 的垂直位置以 `0..1` 標準化比例保存，不保存 viewport 或 SVG pixel；舊文件沒有此欄位時由 renderer 指派預設位置。presentation 不得含 object pixel x/y，也不得改變任何工程意義。
 
+`presentation.slotWidthUnits` 是可選、可由 JSON 持久化的純視覺 layout 設定，用 boundary ID 指定各 gap 的寬度倍率。第一個 gap 使用 `timelineStart`，其後只可使用具有 outgoing gap 的 time marker（leading boundary keys）；`timelineEnd` 不得作為 key。未提供某一 key 時預設為 `1`，即 `150` SVG units；允許值為 finite numeric values in the range `0.4..4`。Designer 可拖曳 timeline 上方 gap handle 調整顯示間距，但不會改變 order slot 順序、marker、endpoint 或其他工程語意。此欄位沒有 engineering-time interpretation；下游不得由 presentation 或 PNG 推導時間或工程關係。
+
 ### JSON 傳遞契約
 
 匯出採用單一、正規化文件，並以 `schemaVersion` 標示相容性。主要物件位於獨立 collection，以 immutable ID reference 連結；不使用名稱作為主鍵，也不複製巢狀資料作為第二份真相。

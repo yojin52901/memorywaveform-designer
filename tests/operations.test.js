@@ -12,6 +12,7 @@ import {
   moveSignalRow,
   moveTransition,
   rebindTimingEndpoint,
+  setSlotWidth,
   setTimingParameterPosition,
   setSegmentBoundary,
   updateTransition,
@@ -125,6 +126,27 @@ test('adding a signal creates one segment covering the whole timeline', () => {
   assert.equal(next.semantic.stateSegments[0].state, 'HIGH');
   assert.equal(next.semantic.stateSegments[0].startMarkerId, 'tm_start');
   assert.equal(next.semantic.stateSegments[0].endMarkerId, 'tm_end');
+});
+
+test('saving a slot width is presentation-only and rounds to six decimals', () => {
+  const document = setupSignal();
+  const updated = setSlotWidth(document, { startMarkerId: 'tm_start', widthUnits: 1.2345678 });
+
+  assert.equal(updated.presentation.slotWidthUnits.tm_start, 1.234568);
+  assert.deepEqual(updated.semantic, document.semantic);
+  assert.notEqual(updated, document);
+});
+
+test('removing a marker removes its stale outgoing slot-width entry', () => {
+  const document = setupSignal();
+  const signalId = document.semantic.signals[0].id;
+  const withMarker = setSegmentBoundary(document, { signalId, sequence: 10, rightState: 'LOW' });
+  const markerId = withMarker.semantic.timeline.timeMarkers[0].id;
+  const withSlotWidth = setSlotWidth(withMarker, { startMarkerId: markerId, widthUnits: 2 });
+
+  const updated = deleteSignal(withSlotWidth, signalId);
+
+  assert.equal(markerId in updated.presentation.slotWidthUnits, false);
 });
 
 test('saving a timing position rounds to six decimal places', () => {

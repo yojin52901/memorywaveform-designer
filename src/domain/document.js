@@ -42,6 +42,7 @@ export function createDocument({ title = 'Untitled waveform' } = {}) {
       signalRowOrder: [],
       timingLaneOrder: [],
       timingParameterPositions: {},
+      slotWidthUnits: {},
       collapsedSignalIds: []
     }
   };

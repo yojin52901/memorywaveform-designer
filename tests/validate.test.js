@@ -121,3 +121,20 @@ test('rejects invalid or dangling timing parameter presentation positions', () =
   assert.match(result.errors.join('\n'), /position.*between 0 and 1/i);
   assert.match(result.errors.join('\n'), /missing timing parameter/i);
 });
+
+test('rejects slot width entries with invalid boundary keys or values', () => {
+  const document = validWaveform();
+  document.presentation.slotWidthUnits = { tm_end: 1, tm_missing: 1, tm_start: 0.39 };
+
+  const result = validateDocument(document);
+
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join('\n'), /slot width.*boundary|slot width.*between 0.4 and 4/i);
+});
+
+test('allows legacy equal-width presentation with no slot width field', () => {
+  const document = validWaveform();
+  delete document.presentation.slotWidthUnits;
+
+  assert.deepEqual(validateDocument(document), { valid: true, errors: [], warnings: [] });
+});

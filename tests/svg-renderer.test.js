@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createDocument } from '../src/domain/document.js';
-import { addSignal, addTimingParameter, setSegmentBoundary, setTimingParameterPosition } from '../src/domain/operations.js';
+import { addPhase, addSignal, addTimingParameter, setSegmentBoundary, setTimingParameterPosition } from '../src/domain/operations.js';
 import { renderSvg } from '../src/render/svg-renderer.js';
 
 function waveformWithTiming() {
@@ -15,6 +15,16 @@ function waveformWithTiming() {
     startTransitionIds: [high.semantic.transitions[0].id],
     endTransitionIds: [high.semantic.transitions[1].id],
     requirementText: '>= 20 ns'
+  });
+}
+
+function waveformWithTimingAndPhase() {
+  const document = waveformWithTiming();
+  const [startTransition, endTransition] = document.semantic.transitions;
+  return addPhase(document, {
+    name: 'write cycle',
+    startTransitionId: startTransition.id,
+    endTransitionId: endTransition.id
   });
 }
 
@@ -39,6 +49,33 @@ test('renders state paths, selectable transitions, timing lanes, and no semantic
   assert.match(svg, /tWP/);
   assert.doesNotMatch(svg, /DRAFT \/ INVALID/);
   assert.doesNotMatch(JSON.stringify(document), /"x"\s*:/);
+});
+
+test('a slot width override moves waveform, timing, and phase projections together', () => {
+  const document = waveformWithTimingAndPhase();
+  const beforeRender = JSON.stringify(document);
+  const svg = renderSvg(document, { slotWidthUnits: { tm_start: 2 } });
+
+  assert.match(svg, /data-slot-resize-start-marker-id="tm_start"/);
+  assert.match(svg, /class="transition-target"[^>]*cx="470"/);
+  assert.match(svg, /class="timing-connector start"[^>]*x1="470"[^>]*x2="470"/);
+  assert.match(svg, /data-relation-kind="phase"[\s\S]*cx="470"/);
+  assert.equal(JSON.stringify(document), beforeRender);
+});
+
+test('renders one top-ruler resize handle for every outgoing gap', () => {
+  const document = waveformWithTiming();
+  const [firstMarker, secondMarker] = document.semantic.timeline.timeMarkers;
+  const svg = renderSvg(document);
+  const handles = [...svg.matchAll(/<g class="slot-resize-handle"[^>]*>/g)].map((match) => match[0]);
+
+  assert.equal(handles.length, 3);
+  assert.match(handles[0], /data-slot-resize-start-marker-id="tm_start"/);
+  assert.match(handles[0], /data-slot-start-x="170"/);
+  assert.match(handles[0], /data-slot-width-units="1"/);
+  assert.match(handles[1], new RegExp(`data-slot-resize-start-marker-id="${firstMarker.id}"`));
+  assert.match(handles[2], new RegExp(`data-slot-resize-start-marker-id="${secondMarker.id}"`));
+  assert.ok(svg.indexOf('class="slot-resize-handle"') > svg.indexOf('class="relation-lane timing"'));
 });
 
 test('renders a vertically positioned timing parameter over the signal layer', () => {

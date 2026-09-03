@@ -8,6 +8,10 @@ This context defines the engineering concepts used to author structured memory t
 A position in the left-to-right waveform sequence. Transitions in the same order slot occur at the same logical time.
 _Avoid_: Pixel column, timestamp
 
+**Visual gap width**:
+The displayed horizontal distance from one timeline boundary to the next. It is presentation-only spacing, independent of order-slot semantics and engineering time; its top-ruler handle can be dragged without changing marker sequence or references.
+_Avoid_: Time interval, duration
+
 **Synchronous transition group**:
 One or more transitions that belong to the same order slot and therefore share one logical time.
 _Avoid_: Transition list, simultaneous marker

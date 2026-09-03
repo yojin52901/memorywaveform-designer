@@ -1,4 +1,10 @@
-import { ANNOTATION_ANCHOR_TYPES, SIGNAL_TYPES, STATES } from './constants.js';
+import {
+  ANNOTATION_ANCHOR_TYPES,
+  SIGNAL_TYPES,
+  SLOT_WIDTH_UNIT_MAX,
+  SLOT_WIDTH_UNIT_MIN,
+  STATES
+} from './constants.js';
 import { cloneDocument, createId, getSignal } from './document.js';
 import {
   assertTimingEndpoints,
@@ -33,6 +39,19 @@ function removeUnusedMarkers(document) {
   document.semantic.timeline.timeMarkers = document.semantic.timeline.timeMarkers
     .filter((marker) => marker.transitionIds.length > 0)
     .sort((left, right) => left.sequence - right.sequence);
+  pruneSlotWidthUnits(document);
+}
+
+export function pruneSlotWidthUnits(document) {
+  if (document.presentation?.slotWidthUnits === undefined) return;
+
+  const permittedBoundaryIds = new Set([
+    document.semantic.timeline.startMarkerId,
+    ...document.semantic.timeline.timeMarkers.map((marker) => marker.id)
+  ]);
+  for (const boundaryId of Object.keys(document.presentation.slotWidthUnits)) {
+    if (!permittedBoundaryIds.has(boundaryId)) delete document.presentation.slotWidthUnits[boundaryId];
+  }
 }
 
 function assertAllTimingEndpoints(document) {
@@ -201,6 +220,23 @@ export function moveSignalRow(document, { signalId, targetIndex }) {
   const boundedIndex = Math.max(0, Math.min(Number(targetIndex), next.presentation.signalRowOrder.length - 1));
   next.presentation.signalRowOrder.splice(currentIndex, 1);
   next.presentation.signalRowOrder.splice(boundedIndex, 0, signalId);
+  return next;
+}
+
+export function setSlotWidth(document, { startMarkerId, widthUnits }) {
+  const permittedBoundaryIds = new Set([
+    document.semantic.timeline.startMarkerId,
+    ...document.semantic.timeline.timeMarkers.map((marker) => marker.id)
+  ]);
+  if (!permittedBoundaryIds.has(startMarkerId) || startMarkerId === document.semantic.timeline.endMarkerId) {
+    throw new Error('Slot width boundary must have an outgoing gap.');
+  }
+  if (!Number.isFinite(widthUnits)) throw new Error('Slot width must be a finite number.');
+
+  const next = cloneDocument(document);
+  next.presentation.slotWidthUnits ??= {};
+  const clampedWidthUnits = Math.max(SLOT_WIDTH_UNIT_MIN, Math.min(SLOT_WIDTH_UNIT_MAX, widthUnits));
+  next.presentation.slotWidthUnits[startMarkerId] = Math.round(clampedWidthUnits * 1_000_000) / 1_000_000;
   return next;
 }
 

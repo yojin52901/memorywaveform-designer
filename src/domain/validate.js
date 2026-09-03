@@ -2,6 +2,8 @@ import {
   ANNOTATION_ANCHOR_TYPES,
   SCHEMA_VERSION,
   SIGNAL_TYPES,
+  SLOT_WIDTH_UNIT_MAX,
+  SLOT_WIDTH_UNIT_MIN,
   STATES,
   TIMELINE_END_ID,
   TIMELINE_START_ID
@@ -173,6 +175,15 @@ function validateAnnotationsAndPresentation(document, refs, errors) {
       errors.push(`Timing parameter ${parameterId} position must be between 0 and 1.`);
     }
   }
+  for (const [boundaryId, widthUnits] of Object.entries(document.presentation?.slotWidthUnits ?? {})) {
+    const isLeadingBoundary = boundaryId === TIMELINE_START_ID || refs.markers.has(boundaryId);
+    if (!isLeadingBoundary || boundaryId === TIMELINE_END_ID) {
+      errors.push(`Slot width ${boundaryId} boundary must have an outgoing gap.`);
+    }
+    if (!Number.isFinite(widthUnits) || widthUnits < SLOT_WIDTH_UNIT_MIN || widthUnits > SLOT_WIDTH_UNIT_MAX) {
+      errors.push(`Slot width ${boundaryId} must be between ${SLOT_WIDTH_UNIT_MIN} and ${SLOT_WIDTH_UNIT_MAX}.`);
+    }
+  }
 }
 
 export function validateDocument(document) {
@@ -194,6 +205,11 @@ export function validateDocument(document) {
     typeof document.presentation.timingParameterPositions !== 'object' ||
     Array.isArray(document.presentation.timingParameterPositions)
   )) errors.push('presentation.timingParameterPositions must be an object.');
+  if (document.presentation.slotWidthUnits !== undefined && (
+    !document.presentation.slotWidthUnits ||
+    typeof document.presentation.slotWidthUnits !== 'object' ||
+    Array.isArray(document.presentation.slotWidthUnits)
+  )) errors.push('presentation.slotWidthUnits must be an object.');
   const collectionsToCheck = [
     ...requiredCollections.map((name) => [name, document.semantic[name]]),
     ['timeline.timeMarkers', document.semantic.timeline.timeMarkers]

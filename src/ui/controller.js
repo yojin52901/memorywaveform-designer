@@ -1,4 +1,4 @@
-import { STATES } from '../domain/constants.js';
+import { BASE_SLOT_WIDTH, SLOT_WIDTH_UNIT_MAX, SLOT_WIDTH_UNIT_MIN, STATES } from '../domain/constants.js';
 import { createDocument } from '../domain/document.js';
 import {
   addAnnotation,
@@ -13,6 +13,7 @@ import {
   moveSignalRow,
   moveTransition,
   rebindTimingEndpoint,
+  setSlotWidth,
   setTimingParameterPosition,
   setSegmentBoundary,
   updateAnnotation,
@@ -24,6 +25,7 @@ import {
 import { exportDocumentJson, getPngExportPolicy, loadDocumentJson } from '../domain/import-export.js';
 import { validateDocument } from '../domain/validate.js';
 import { renderSvg, svgToPngBlob } from '../render/svg-renderer.js';
+import { createTimelineLayout } from '../render/timeline-layout.js';
 import {
   appendHistoryEntry,
   createHistoryEntry,
@@ -192,11 +194,21 @@ export function transitionDependencyDeletePrompt(names) {
   return `This transition is used by: ${names}. Delete the transition? Dependent objects will be updated or removed as required.`;
 }
 
-export function sequenceFromPointer(svg, event) {
+function pointerSvgX(svg, event) {
   const rect = svg.getBoundingClientRect();
   const viewBox = svg.viewBox.baseVal;
-  const x = ((event.clientX - rect.left) / rect.width) * viewBox.width;
-  return Math.round((x - 170) / 150);
+  return ((event.clientX - rect.left) / rect.width) * viewBox.width;
+}
+
+export function sequenceFromPointer(svg, event, documentModel) {
+  const x = pointerSvgX(svg, event);
+  if (documentModel) return Math.round(createTimelineLayout(documentModel).slotCoordinateForX(x));
+  return Math.round((x - 170) / BASE_SLOT_WIDTH);
+}
+
+export function slotWidthFromPointer(svg, event, drag) {
+  const widthUnits = (pointerSvgX(svg, event) - drag.startX) / BASE_SLOT_WIDTH;
+  return Math.max(SLOT_WIDTH_UNIT_MIN, Math.min(SLOT_WIDTH_UNIT_MAX, widthUnits));
 }
 
 export function pointerSvgY(svg, event) {
@@ -368,17 +380,26 @@ export function bindCanvasPointerEvents(svg, {
   applyOperation,
   setNotice,
   render,
+  previewCanvas,
   showDragFeedback,
   clearDragFeedback,
   dragMessage
 }) {
   svg.addEventListener('pointerdown', (event) => {
     const state = getState();
+    const slotResize = event.target.closest('[data-slot-resize-start-marker-id]');
     const relationEndpoint = event.target.closest('[data-relation-endpoint]');
     const timingRelation = event.target.closest('[data-relation-kind="timing"][data-relation-id]');
     const transition = event.target.closest('[data-transition-id]');
     const marker = event.target.closest('[data-marker-id]');
-    if (relationEndpoint) {
+    if (slotResize) {
+      state.drag = {
+        kind: 'slot-width',
+        startMarkerId: slotResize.dataset.slotResizeStartMarkerId,
+        startX: Number(slotResize.dataset.slotStartX),
+        widthUnits: Number(slotResize.dataset.slotWidthUnits)
+      };
+    } else if (relationEndpoint) {
       state.drag = {
         kind: 'relation-endpoint',
         relationId: relationEndpoint.dataset.relationId,
@@ -410,7 +431,7 @@ export function bindCanvasPointerEvents(svg, {
       state.drag = { kind: 'marker', id: marker.dataset.markerId };
     } else return;
     svg.setPointerCapture(event.pointerId);
-    showDragFeedback(svg, state.drag, relationEndpoint ?? timingRelation ?? transition ?? marker);
+    showDragFeedback(svg, state.drag, slotResize ?? relationEndpoint ?? timingRelation ?? transition ?? marker);
     event.stopPropagation();
     event.preventDefault();
   });
@@ -418,7 +439,13 @@ export function bindCanvasPointerEvents(svg, {
     const state = getState();
     if (!state.drag) return;
     const status = editor.querySelector('#drag-status');
-    if (state.drag.kind === 'timing-position') {
+    if (state.drag.kind === 'slot-width') {
+      state.drag.widthUnits = slotWidthFromPointer(svg, event, state.drag);
+      previewCanvas({
+        ...(state.document.presentation?.slotWidthUnits ?? {}),
+        [state.drag.startMarkerId]: state.drag.widthUnits
+      }, event.pointerId, state.drag);
+    } else if (state.drag.kind === 'timing-position') {
       const position = timingPositionFromPointer(svg, event, { grabOffsetY: state.drag.grabOffsetY });
       state.drag.position = position;
       const top = Number(svg.dataset.timingTopY);
@@ -432,7 +459,7 @@ export function bindCanvasPointerEvents(svg, {
       });
       if (status) status.textContent = dragMessage(state.drag, position);
     } else if (status && (state.drag.kind === 'transition' || state.drag.kind === 'marker')) {
-      status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event));
+      status.textContent = dragMessage(state.drag, sequenceFromPointer(svg, event, state.document));
     }
     event.preventDefault();
   });
@@ -443,6 +470,14 @@ export function bindCanvasPointerEvents(svg, {
     state.drag = null;
     clearDragFeedback(svg);
     event.preventDefault();
+    if (drag.kind === 'slot-width') {
+      drag.widthUnits = slotWidthFromPointer(svg, event, drag);
+      applyOperation((documentModel) => setSlotWidth(documentModel, {
+        startMarkerId: drag.startMarkerId,
+        widthUnits: drag.widthUnits
+      }));
+      return;
+    }
     if (drag.kind === 'timing-position') {
       applyOperation((documentModel) => setTimingParameterPosition(documentModel, { parameterId: drag.id, position: drag.position }));
       return;
@@ -482,7 +517,7 @@ export function bindCanvasPointerEvents(svg, {
         : addPhase(documentModel, { ...creation.values, tags: tagsFrom(creation.values.tags ?? ''), startTransitionId: creation.firstTransitionId, endTransitionId: targetTransitionId }));
       return;
     }
-    const targetSequence = sequenceFromPointer(svg, event);
+    const targetSequence = sequenceFromPointer(svg, event, state.document);
     applyOperation((documentModel) => drag.kind === 'marker'
       ? moveMarker(documentModel, { markerId: drag.id, targetSequence })
       : moveTransition(documentModel, { transitionId: drag.id, targetSequence }));
@@ -591,6 +626,9 @@ export function createEditor(root = document) {
       const marker = state.document.semantic.timeline.timeMarkers.find((item) => item.id === drag.id);
       return `Moving marker #${marker?.sequence ?? '?'}. All transitions in this column move together. ${suffix}`;
     }
+    if (drag.kind === 'slot-width') {
+      return `Resizing timeline slot. Width: ${Math.round(drag.widthUnits * 100)}%. Release to apply.`;
+    }
     if (drag.kind === 'relation-endpoint') {
       const relations = drag.relationKind === 'timing' ? state.document.semantic.timingParameters : state.document.semantic.phases;
       const relation = relations.find((item) => item.id === drag.relationId);
@@ -621,8 +659,7 @@ export function createEditor(root = document) {
     if (status) status.hidden = true;
   }
 
-  function bindCanvasEvents() {
-    const svg = editor.querySelector('svg');
+  function bindCanvasEvents(svg = editor.querySelector('svg')) {
     if (!svg) return;
     bindCanvasPointerEvents(svg, {
       root,
@@ -631,6 +668,20 @@ export function createEditor(root = document) {
       applyOperation,
       setNotice,
       render,
+      previewCanvas(slotWidthUnits, pointerId, drag) {
+        const canvas = editor.querySelector('#waveform-canvas');
+        if (!canvas) return;
+        canvas.innerHTML = renderSvg(state.document, {
+          draft: getPngExportPolicy(state.document).draft,
+          slotWidthUnits
+        });
+        const previewSvg = canvas.querySelector('svg');
+        if (!previewSvg) return;
+        bindCanvasEvents(previewSvg);
+        previewSvg.setPointerCapture(pointerId);
+        const handle = previewSvg.querySelector(`[data-slot-resize-start-marker-id="${drag.startMarkerId}"]`);
+        showDragFeedback(previewSvg, drag, handle);
+      },
       showDragFeedback,
       clearDragFeedback,
       dragMessage

@@ -96,6 +96,19 @@ test('dragging uses contiguous order slots starting at 1', () => {
   assert.equal(sequenceFromPointer(svg, { clientX: 470 }), 2);
 });
 
+test('sequence targeting follows widened slot geometry', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = setSegmentBoundary(document, { signalId: document.semantic.signals[0].id, sequence: 1, rightState: 'LOW' });
+  document.presentation.slotWidthUnits.tm_start = 2;
+  const widenedSvg = {
+    getBoundingClientRect: () => ({ left: 0, width: 860 }),
+    viewBox: { baseVal: { width: 860 } }
+  };
+
+  assert.equal(sequenceFromPointer(widenedSvg, { clientX: 470 }, document), 1);
+  assert.equal(sequenceFromPointer(widenedSvg, { clientX: 620 }, document), 2);
+});
+
 test('vertical timing drag maps the pointer into the signal overlay interval', () => {
   const svg = {
     dataset: { timingTopY: '64', timingBottomY: '144' },
@@ -615,6 +628,124 @@ test('relation endpoints retain pointerdown priority over their timing group', (
   assert.deepEqual(harness.state.drag, {
     kind: 'relation-endpoint', relationId: harness.parameterId, relationKind: 'timing', endpoint: 'start'
   });
+});
+
+function slotResizeHarness() {
+  const state = { document: createDocument({ title: 'Program' }), drag: null, relationCreation: null, selectedTransitionId: null };
+  const status = eventNode();
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : null;
+  const resizeHandle = {
+    dataset: { slotResizeStartMarkerId: 'tm_start', slotStartX: '170', slotWidthUnits: '1' },
+    closest(selector) {
+      return selector === '[data-slot-resize-start-marker-id]' ? resizeHandle : null;
+    }
+  };
+  const previews = [];
+  const notices = [];
+  let applyCount = 0;
+  let feedbackCount = 0;
+  let renderCount = 0;
+  let currentSvg;
+
+  function makeSvg() {
+    const svg = eventNode();
+    svg.dataset = {};
+    svg.viewBox = { baseVal: { width: 860, height: 300 } };
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 860, height: 300 });
+    svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+    svg.querySelector = () => null;
+    svg.querySelectorAll = () => [];
+    return svg;
+  }
+
+  function bind(svg) {
+    bindCanvasPointerEvents(svg, {
+      root: { elementFromPoint: () => null },
+      editor,
+      getState: () => state,
+      applyOperation(operation) {
+        applyCount += 1;
+        state.document = operation(state.document);
+      },
+      setNotice: (notice) => notices.push(notice),
+      render() { renderCount += 1; },
+      previewCanvas(slotWidthUnits, pointerId, drag) {
+        previews.push({ slotWidthUnits, pointerId, widthUnits: drag.widthUnits });
+        currentSvg = makeSvg();
+        bind(currentSvg);
+        currentSvg.setPointerCapture(pointerId);
+        feedbackCount += 1;
+      },
+      showDragFeedback: () => { feedbackCount += 1; },
+      clearDragFeedback: () => {},
+      dragMessage: () => 'resize'
+    });
+  }
+
+  currentSvg = makeSvg();
+  bind(currentSvg);
+  const pointer = (clientX) => ({
+    target: resizeHandle,
+    pointerId: 11,
+    clientX,
+    clientY: 26,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return {
+    applyCount: () => applyCount,
+    currentSvg: () => currentSvg,
+    feedbackCount: () => feedbackCount,
+    notices,
+    pointer,
+    previews,
+    renderCount: () => renderCount,
+    state
+  };
+}
+
+test('slot resize pointer moves repaint the connected SVG before committing', () => {
+  const harness = slotResizeHarness();
+  const before = structuredClone(harness.state.document);
+
+  harness.currentSvg().dispatch('pointerdown', harness.pointer(320));
+  harness.currentSvg().dispatch('pointermove', harness.pointer(470));
+  harness.currentSvg().dispatch('pointermove', harness.pointer(620));
+
+  assert.equal(harness.state.drag.kind, 'slot-width');
+  assert.deepEqual(harness.previews, [
+    { slotWidthUnits: { tm_start: 2 }, pointerId: 11, widthUnits: 2 },
+    { slotWidthUnits: { tm_start: 3 }, pointerId: 11, widthUnits: 3 }
+  ]);
+  assert.equal(harness.applyCount(), 0);
+  assert.deepEqual(harness.state.document, before);
+  assert.equal(harness.currentSvg().capturedPointerId, 11);
+  assert.equal(harness.feedbackCount(), 3);
+});
+
+test('slot resize commits one presentation update on pointerup and cancels atomically', () => {
+  const commit = slotResizeHarness();
+
+  commit.currentSvg().dispatch('pointerdown', commit.pointer(320));
+  commit.currentSvg().dispatch('pointermove', commit.pointer(620));
+  commit.currentSvg().dispatch('pointerup', commit.pointer(620));
+
+  assert.equal(commit.applyCount(), 1);
+  assert.equal(commit.state.document.presentation.slotWidthUnits.tm_start, 3);
+  assert.equal(commit.state.drag, null);
+
+  const cancellation = slotResizeHarness();
+  const beforeCancellation = structuredClone(cancellation.state.document);
+
+  cancellation.currentSvg().dispatch('pointerdown', cancellation.pointer(320));
+  cancellation.currentSvg().dispatch('pointermove', cancellation.pointer(470));
+  cancellation.currentSvg().dispatch('pointercancel', cancellation.pointer(470));
+
+  assert.equal(cancellation.applyCount(), 0);
+  assert.deepEqual(cancellation.state.document, beforeCancellation);
+  assert.equal(cancellation.renderCount(), 1);
+  assert.deepEqual(cancellation.notices, ['Drag cancelled.']);
 });
 
 for (const [name, invalidDocument] of [

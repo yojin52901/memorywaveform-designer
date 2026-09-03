@@ -1,3 +1,5 @@
+import { createTimelineLayout } from './timeline-layout.js';
+
 function escapeXml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -5,10 +7,6 @@ function escapeXml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;');
-}
-
-function markerSequence(document) {
-  return [...document.semantic.timeline.timeMarkers].sort((left, right) => left.sequence - right.sequence);
 }
 
 function segmentsForSignal(document, signalId, markerX, endX) {
@@ -46,19 +44,16 @@ function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-export function renderSvg(document, { draft = false } = {}) {
+export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
   const signalsById = new Map(document.semantic.signals.map((signal) => [signal.id, signal]));
   const presentedSignalIds = document.presentation?.signalRowOrder?.filter((id) => signalsById.has(id)) ?? [];
   const signalIds = [
     ...presentedSignalIds,
     ...document.semantic.signals.map((signal) => signal.id).filter((id) => !presentedSignalIds.includes(id))
   ];
-  const markers = markerSequence(document);
-  const leftX = 170;
-  const markerGap = 150;
-  const endX = leftX + markerGap * (markers.length + 1);
-  const width = Math.max(860, endX + 80);
-  const markerX = new Map(markers.map((marker, index) => [marker.id, leftX + markerGap * (index + 1)]));
+  const markers = [...document.semantic.timeline.timeMarkers].sort((left, right) => left.sequence - right.sequence);
+  const layout = createTimelineLayout(document, { slotWidthUnits });
+  const { leftX, endX, width, markerX } = layout;
   const timingList = relationItems(document, 'timing');
   const phaseList = relationItems(document, 'phase');
   const signalHeight = Math.max(1, signalIds.length) * 94;
@@ -132,9 +127,12 @@ export function renderSvg(document, { draft = false } = {}) {
   const annotations = document.semantic.annotations.map((annotation, index) =>
     `<text class="annotation" x="${leftX}" y="${height - 24 - index * 18}">Note: ${escapeXml(annotation.text)}</text>`
   ).join('');
+  const resizeHandles = layout.gaps.map((gap) =>
+    `<g class="slot-resize-handle" data-slot-resize-start-marker-id="${escapeXml(gap.startMarkerId)}" data-slot-start-x="${gap.startX}" data-slot-width-units="${gap.widthUnits}"><line x1="${gap.endX}" x2="${gap.endX}" y1="18" y2="34"/><circle cx="${gap.endX}" cy="26" r="10"/></g>`
+  ).join('');
   const watermark = draft ? `<g class="draft-watermark"><text x="${width / 2}" y="${height / 2}" text-anchor="middle">DRAFT / INVALID</text></g>` : '';
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.timing .timing-connector{pointer-events:none;stroke:#cbd3df}.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.timing .timing-connector{pointer-events:none;stroke:#cbd3df}.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.slot-resize-handle{cursor:ew-resize}.slot-resize-handle line{stroke:#5f718e;stroke-width:2;pointer-events:none}.slot-resize-handle circle{fill:transparent;stroke:#5f718e;stroke-width:2}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}${resizeHandles}</svg>`;
 }
 
 function loadSvgImage(source) {
