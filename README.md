@@ -2,13 +2,19 @@
 
 A static, structured editor for memory timing waveforms. The waveform document—not canvas pixels—is the source of truth. SVG, PNG, and export JSON are projections of that one semantic model.
 
-## Run locally
+## Access and privacy
+
+The deployed editor requires Google sign-in with a verified `@gmail.com` address. Anyone may open the sign-in page, but the waveform editor and its browser modules are delivered only after the worker verifies a Google identity and creates a secure session. The toolbar shows the signed-in address and provides a **登出** button to end that browser session.
+
+Waveform documents, history, and exports remain in the current browser's `localStorage`; signing in does not upload, share, or migrate them. The integration requests identity only: it does not use Google Drive or Gmail scopes, and no OAuth secret is stored in this repository or in browser storage.
+
+## Verify locally
 
 ```bash
-python3 -m http.server 4173
+npm test
 ```
 
-Open [http://localhost:4173](http://localhost:4173). No package installation or server-side dependency is required.
+The deployed authentication boundary is a Sites worker and needs its runtime environment (`GOOGLE_CLIENT_ID` and a secret session-signing key). The Node test suite covers its token, session, route, and editor-account behavior without live Google credentials.
 
 ## Core interactions
 
