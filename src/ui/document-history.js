@@ -26,6 +26,16 @@ export function appendHistoryEntry(history, entry) {
   return { activeId: entry.id, entries: [...history.entries.map(cloneEntry), cloneEntry(entry)] };
 }
 
+export function deleteHistoryEntry(history, entryId) {
+  const entries = history.entries.filter((entry) => entry.id !== entryId).map(cloneEntry);
+  if (entries.length === history.entries.length) throw new Error('History document was not found.');
+  if (!entries.length) return { activeId: null, entries: [] };
+  const activeId = history.activeId === entryId
+    ? entries.reduce((latest, entry) => entry.updatedAt > latest.updatedAt ? entry : latest).id
+    : history.activeId;
+  return { activeId, entries };
+}
+
 export function selectHistoryEntry(history, entryId) {
   const entry = history.entries.find((item) => item.id === entryId);
   if (!entry) throw new Error('History document was not found.');

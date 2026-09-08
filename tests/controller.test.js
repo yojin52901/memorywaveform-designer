@@ -343,6 +343,7 @@ test('history and every authoring tool are independently collapsed by default', 
   assert.equal((markup.match(/<details class="tool-disclosure">/g) ?? []).length, 5);
   assert.doesNotMatch(markup, /<details class="tool-disclosure" open/);
   assert.match(markup, /data-history-id="doc-1"/);
+  assert.match(markup, /data-delete-history-id="doc-1"/);
 });
 
 test('a valid document can switch between waveform and formatted current JSON', () => {
@@ -791,6 +792,54 @@ for (const [name, invalidDocument] of [
     assert.equal(instance.getState().validation.valid, true);
   });
 }
+
+test('deleting the active history item opens the newest remaining waveform', () => {
+  const oldest = createDocument({ title: 'Oldest' });
+  const newest = createDocument({ title: 'Newest' });
+  const active = createDocument({ title: 'Active' });
+  const root = fakeEditorRoot({
+    activeId: 'active',
+    entries: [
+      { id: 'oldest', title: oldest.metadata.title, updatedAt: 100, snapshot: oldest },
+      { id: 'newest', title: newest.metadata.title, updatedAt: 300, snapshot: newest },
+      { id: 'active', title: active.metadata.title, updatedAt: 200, snapshot: active }
+    ]
+  });
+  const originalWindow = globalThis.window;
+  globalThis.window = { confirm: () => true };
+  try {
+    const instance = createEditor(root);
+    root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-delete-history-id]' ? { dataset: { deleteHistoryId: 'active' } } : null }
+    });
+
+    assert.equal(instance.getState().history.activeId, 'newest');
+    assert.deepEqual(instance.getState().history.entries.map((entry) => entry.id), ['oldest', 'newest']);
+    assert.equal(instance.getState().document.metadata.title, 'Newest');
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('deleting the final history item replaces it with a new empty waveform', () => {
+  const root = fakeEditorRoot(historyPayload(createDocument({ title: 'Last waveform' })));
+  const originalWindow = globalThis.window;
+  globalThis.window = { confirm: () => true };
+  try {
+    const instance = createEditor(root);
+    root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-delete-history-id]' ? { dataset: { deleteHistoryId: 'active' } } : null }
+    });
+
+    const state = instance.getState();
+    assert.equal(state.history.entries.length, 1);
+    assert.notEqual(state.history.activeId, 'active');
+    assert.equal(state.document.metadata.title, 'Untitled waveform');
+    assert.equal(state.document.semantic.signals.length, 0);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
 
 test('repair rendering keeps malformed collections inspectable across startup and history selection', () => {
   const malformed = waveformWithTiming();

@@ -9,7 +9,7 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;');
 }
 
-function segmentsForSignal(document, signalId, markerX, endX) {
+function segmentsForSignal(document, signalId, markerX, leftX, endX) {
   const sequenceFor = (markerId) => {
     if (markerId === document.semantic.timeline.startMarkerId) return Number.NEGATIVE_INFINITY;
     if (markerId === document.semantic.timeline.endMarkerId) return Number.POSITIVE_INFINITY;
@@ -18,7 +18,11 @@ function segmentsForSignal(document, signalId, markerX, endX) {
   return document.semantic.stateSegments
     .filter((segment) => segment.signalId === signalId)
     .sort((left, right) => sequenceFor(left.startMarkerId) - sequenceFor(right.startMarkerId))
-    .map((segment) => ({ ...segment, endX: segment.endMarkerId === document.semantic.timeline.endMarkerId ? endX : markerX.get(segment.endMarkerId) }));
+    .map((segment) => ({
+      ...segment,
+      startX: segment.startMarkerId === document.semantic.timeline.startMarkerId ? leftX : markerX.get(segment.startMarkerId),
+      endX: segment.endMarkerId === document.semantic.timeline.endMarkerId ? endX : markerX.get(segment.endMarkerId)
+    }));
 }
 
 function stateY(baseY, state) {
@@ -67,7 +71,7 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
   const rows = signalIds.map((signalId) => {
     const signal = signalsById.get(signalId);
     const baseY = signalYById.get(signalId);
-    const segments = segmentsForSignal(document, signalId, markerX, endX);
+    const segments = segmentsForSignal(document, signalId, markerX, leftX, endX);
     const path = segments.reduce((parts, segment, segmentIndex) => {
       const segmentStartX = segmentIndex === 0 ? leftX : markerX.get(segment.startMarkerId);
       const y = stateY(baseY, segment.state);
@@ -77,6 +81,24 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
       if (next) parts.push(`L ${segment.endX} ${stateY(baseY, next.state)}`);
       return parts;
     }, []).join(' ');
+    const unknownBands = segments.filter((segment) => segment.state === 'UNKNOWN').map((segment) =>
+      `<rect class="state-unknown-band" data-segment-id="${escapeXml(segment.id)}" x="${segment.startX}" y="${baseY - 12}" width="${segment.endX - segment.startX}" height="24" fill="#dbeafe"><title>UNKNOWN state</title></rect>`
+    ).join('');
+    const unknownBoundaries = segments.filter((segment) => segment.state === 'UNKNOWN').map((segment) =>
+      `<line class="state-unknown-boundary top" data-segment-id="${escapeXml(segment.id)}" x1="${segment.startX}" x2="${segment.endX}" y1="${baseY - 12}" y2="${baseY - 12}"/><line class="state-unknown-boundary bottom" data-segment-id="${escapeXml(segment.id)}" x1="${segment.startX}" x2="${segment.endX}" y1="${baseY + 12}" y2="${baseY + 12}"/>`
+    ).join('');
+    const unknownCrosses = segments.filter((segment) => segment.state === 'UNKNOWN').map((segment) => {
+      const crossSize = 24;
+      const crossStride = 24;
+      const segmentWidth = segment.endX - segment.startX;
+      const count = Math.max(1, Math.floor((segmentWidth - crossSize) / crossStride) + 1);
+      const drawnWidth = crossSize + (count - 1) * crossStride;
+      const firstX = segment.startX + (segmentWidth - drawnWidth) / 2;
+      return Array.from({ length: count }, (_, index) => {
+        const x = firstX + index * crossStride;
+        return `<path class="state-unknown-cross" data-segment-id="${escapeXml(segment.id)}" d="M ${x} ${baseY - 12} L ${x + crossSize} ${baseY + 12} M ${x + crossSize} ${baseY - 12} L ${x} ${baseY + 12}"/>`;
+      }).join('');
+    }).join('');
     const transitionTargets = document.semantic.transitions
       .filter((transition) => transition.signalId === signalId)
       .map((transition) => {
@@ -84,7 +106,7 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
         return `<circle class="transition-target" data-transition-id="${escapeXml(transition.id)}" cx="${x}" cy="${baseY}" r="7"><title>${escapeXml(`${signal.name}: ${transition.fromState} → ${transition.toState}`)}</title></circle>`;
       }).join('');
     const segmentLabels = segments.map((segment) => `<text class="state-label ${stateClass(segment.state)}" x="${segment.endX - 4}" y="${stateY(baseY, segment.state) - 8}" text-anchor="end">${escapeXml(segment.state)}</text>`).join('');
-    return `<g class="signal-row" data-signal-id="${escapeXml(signal.id)}"><text class="signal-label" x="22" y="${baseY + 5}">${escapeXml(signal.name)}</text><text class="signal-type" x="22" y="${baseY + 23}">${escapeXml(signal.type)}</text><line class="row-guide" x1="${leftX}" x2="${endX}" y1="${baseY}" y2="${baseY}"/><path class="waveform-path" d="${path}"/>${segmentLabels}${transitionTargets}</g>`;
+    return `<g class="signal-row" data-signal-id="${escapeXml(signal.id)}"><text class="signal-label" x="22" y="${baseY + 5}">${escapeXml(signal.name)}</text><text class="signal-type" x="22" y="${baseY + 23}">${escapeXml(signal.type)}</text><line class="row-guide" x1="${leftX}" x2="${endX}" y1="${baseY}" y2="${baseY}"/><path class="waveform-path" d="${path}"/>${unknownBands}${unknownBoundaries}${unknownCrosses}${segmentLabels}${transitionTargets}</g>`;
   }).join('');
 
   const markerColumns = markers.map((marker) => {
@@ -132,7 +154,7 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
   ).join('');
   const watermark = draft ? `<g class="draft-watermark"><text x="${width / 2}" y="${height / 2}" text-anchor="middle">DRAFT / INVALID</text></g>` : '';
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M 8 0 L 0 4 L 8 8" fill="none" stroke="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#1f5ea8;stroke-width:3;stroke-linejoin:round}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#b56f00}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.timing .timing-connector{pointer-events:none;stroke:#cbd3df}.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.slot-resize-handle{cursor:ew-resize}.slot-resize-handle line{stroke:#5f718e;stroke-width:2;pointer-events:none}.slot-resize-handle circle{fill:transparent;stroke:#5f718e;stroke-width:2}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}${resizeHandles}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto-start-reverse"><path d="M 0 0 L 6 3 L 0 6 Z" fill="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#2a3038;stroke-width:3;stroke-linejoin:round}.state-unknown-band{pointer-events:none}.state-unknown-boundary{pointer-events:none;stroke:#2563eb;stroke-width:1.6}.state-unknown-cross{fill:none;pointer-events:none;stroke:#2563eb;stroke-width:1.6}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#2563eb}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.timing .timing-connector{pointer-events:none;stroke:#1c1f24}.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.slot-resize-handle{cursor:ew-resize}.slot-resize-handle line{stroke:#5f718e;stroke-width:2;pointer-events:none}.slot-resize-handle circle{fill:transparent;stroke:#5f718e;stroke-width:2}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}${resizeHandles}</svg>`;
 }
 
 function loadSvgImage(source) {

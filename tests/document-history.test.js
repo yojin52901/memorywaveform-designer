@@ -7,6 +7,7 @@ import {
   appendHistoryEntry,
   createHistoryEntry,
   createHistoryState,
+  deleteHistoryEntry,
   loadHistory,
   replaceActiveHistoryEntry,
   saveHistory,
@@ -71,6 +72,18 @@ test('history appends and selects documents without sharing snapshots', () => {
   assert.equal(selected.snapshot.metadata.title, 'First');
   selected.snapshot.metadata.title = 'Local edit';
   assert.equal(selected.history.entries[0].snapshot.metadata.title, 'First');
+});
+
+test('deleting the active history entry selects the newest remaining snapshot', () => {
+  const oldest = createHistoryEntry(createDocument({ title: 'Oldest' }), { id: 'oldest', now: 100 });
+  const newest = createHistoryEntry(createDocument({ title: 'Newest' }), { id: 'newest', now: 300 });
+  const active = createHistoryEntry(createDocument({ title: 'Active' }), { id: 'active', now: 200 });
+  const history = { activeId: active.id, entries: [oldest, newest, active] };
+
+  const updated = deleteHistoryEntry(history, active.id);
+
+  assert.equal(updated.activeId, newest.id);
+  assert.deepEqual(updated.entries.map((entry) => entry.id), [oldest.id, newest.id]);
 });
 
 test('history storage failures fall back without throwing', () => {

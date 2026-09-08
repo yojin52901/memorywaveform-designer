@@ -12,6 +12,25 @@ import {
   timingParameterReferencesTransition
 } from './timing-endpoints.js';
 
+function semanticObjectIds(document) {
+  return new Set([
+    ...document.semantic.signals,
+    ...document.semantic.timeline.timeMarkers,
+    ...document.semantic.stateSegments,
+    ...document.semantic.transitions,
+    ...document.semantic.timingParameters,
+    ...document.semantic.phases,
+    ...document.semantic.annotations
+  ].map((item) => item.id));
+}
+
+function createObjectId(document, prefix) {
+  const ids = semanticObjectIds(document);
+  let id = createId(prefix);
+  while (ids.has(id)) id = createId(prefix);
+  return id;
+}
+
 function markerSequence(document, markerId) {
   if (markerId === document.semantic.timeline.startMarkerId) return Number.NEGATIVE_INFINITY;
   if (markerId === document.semantic.timeline.endMarkerId) return Number.POSITIVE_INFINITY;
@@ -30,7 +49,7 @@ function ensureMarker(document, sequence) {
   const found = document.semantic.timeline.timeMarkers.find((marker) => marker.sequence === sequence);
   if (found) return found;
 
-  const marker = { id: createId('tm'), sequence, transitionIds: [] };
+  const marker = { id: createObjectId(document, 'tm'), sequence, transitionIds: [] };
   document.semantic.timeline.timeMarkers.push(marker);
   return marker;
 }
@@ -127,7 +146,7 @@ function rederiveSignalTransitions(document, signalId, forcedIdsByMarkerId = new
 
     const existing = oldByMarkerId.get(marker.id);
     const transition = {
-      id: forcedIdsByMarkerId.get(marker.id) ?? existing?.id ?? createId('tr'),
+      id: forcedIdsByMarkerId.get(marker.id) ?? existing?.id ?? createObjectId(document, 'tr'),
       signalId,
       markerId: marker.id,
       fromState: left.state,
@@ -166,7 +185,7 @@ export function addSignal(document, {
 
   const next = cloneDocument(document);
   const signal = {
-    id: createId('sig'),
+    id: createObjectId(next, 'sig'),
     name: name.trim(),
     type,
     subtype,
@@ -176,7 +195,7 @@ export function addSignal(document, {
   next.semantic.signals.push(signal);
   next.presentation.signalRowOrder.push(signal.id);
   next.semantic.stateSegments.push({
-    id: createId('seg'),
+    id: createObjectId(next, 'seg'),
     signalId: signal.id,
     startMarkerId: next.semantic.timeline.startMarkerId,
     endMarkerId: next.semantic.timeline.endMarkerId,
@@ -291,7 +310,7 @@ export function setSegmentBoundary(document, { signalId, sequence, rightState })
   const marker = ensureMarker(next, sequence);
 
   const right = {
-    id: createId('seg'),
+    id: createObjectId(next, 'seg'),
     signalId,
     startMarkerId: marker.id,
     endMarkerId: target.endMarkerId,
@@ -412,7 +431,7 @@ export function updateTransition(document, transitionId, { signalId, sequence, r
 
     const marker = ensureMarker(next, targetSequence);
     const rightTargetSegment = {
-      id: createId('seg'),
+      id: createObjectId(next, 'seg'),
       signalId: targetSignalId,
       startMarkerId: marker.id,
       endMarkerId: target.endMarkerId,
@@ -575,7 +594,7 @@ export function addTimingParameter(document, {
   const noteMetadata = timingNoteMetadata();
   const next = cloneDocument(document);
   const parameter = {
-    id: createId('tp'),
+    id: createObjectId(next, 'tp'),
     name: name.trim(),
     startTransitionIds: [...startTransitionIds],
     endTransitionIds: [...endTransitionIds],
@@ -643,7 +662,7 @@ export function addPhase(document, { name, startTransitionId, endTransitionId, t
   if (!name?.trim()) throw new Error('Phase name is required.');
   assertOrderedEndpoints(document, startTransitionId, endTransitionId);
   const next = cloneDocument(document);
-  const phase = { id: createId('phase'), name: name.trim(), startTransitionId, endTransitionId, tags: [...tags] };
+  const phase = { id: createObjectId(next, 'phase'), name: name.trim(), startTransitionId, endTransitionId, tags: [...tags] };
   next.semantic.phases.push(phase);
   next.presentation.timingLaneOrder.push(phase.id);
   return next;
@@ -685,7 +704,7 @@ export function addAnnotation(document, { text, anchorType = 'document', anchorI
   if (!text?.trim()) throw new Error('Annotation text is required.');
   assertAnnotationAnchor(document, anchorType, anchorId);
   const next = cloneDocument(document);
-  const annotation = { id: createId('note'), text: text.trim(), anchorType, anchorId };
+  const annotation = { id: createObjectId(next, 'note'), text: text.trim(), anchorType, anchorId };
   next.semantic.annotations.push(annotation);
   return next;
 }

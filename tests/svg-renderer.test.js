@@ -51,6 +51,34 @@ test('renders state paths, selectable transitions, timing lanes, and no semantic
   assert.doesNotMatch(JSON.stringify(document), /"x"\s*:/);
 });
 
+test('renders an UNKNOWN segment as a blue band with connected crosses touching both boundaries', () => {
+  let document = addSignal(createDocument({ title: 'Unknown state' }), { name: 'DQ', type: 'data', initialState: 'HIGH' });
+  const signalId = document.semantic.signals[0].id;
+  document = setSegmentBoundary(document, { signalId, sequence: 10, rightState: 'UNKNOWN' });
+  document = setSegmentBoundary(document, { signalId, sequence: 30, rightState: 'LOW' });
+  const unknown = document.semantic.stateSegments.find((segment) => segment.state === 'UNKNOWN');
+  const beforeRender = JSON.stringify(document);
+
+  const svg = renderSvg(document);
+
+  assert.doesNotMatch(svg, /unknown-hatch/);
+  assert.match(svg, new RegExp(`class="state-unknown-band"[^>]*data-segment-id="${unknown.id}"[^>]*fill="#dbeafe"`));
+  assert.match(svg, new RegExp(`class="state-unknown-band"[^>]*data-segment-id="${unknown.id}"[^>]*x="320"[^>]*width="150"`));
+  assert.match(svg, new RegExp(`class="state-unknown-boundary top"[^>]*data-segment-id="${unknown.id}"[^>]*x1="320"[^>]*x2="470"[^>]*y1="92"[^>]*y2="92"`));
+  assert.match(svg, new RegExp(`class="state-unknown-boundary bottom"[^>]*data-segment-id="${unknown.id}"[^>]*x1="320"[^>]*x2="470"[^>]*y1="116"[^>]*y2="116"`));
+  const crosses = [...svg.matchAll(new RegExp(`<path class="state-unknown-cross" data-segment-id="${unknown.id}" d="([^"]+)"`, 'g'))].map((match) => match[1]);
+  assert.deepEqual(crosses, [
+    'M 323 92 L 347 116 M 347 92 L 323 116',
+    'M 347 92 L 371 116 M 371 92 L 347 116',
+    'M 371 92 L 395 116 M 395 92 L 371 116',
+    'M 395 92 L 419 116 M 419 92 L 395 116',
+    'M 419 92 L 443 116 M 443 92 L 419 116',
+    'M 443 92 L 467 116 M 467 92 L 443 116'
+  ]);
+  assert.match(svg, /class="waveform-path"/);
+  assert.equal(JSON.stringify(document), beforeRender);
+});
+
 test('a slot width override moves waveform, timing, and phase projections together', () => {
   const document = waveformWithTimingAndPhase();
   const beforeRender = JSON.stringify(document);
@@ -133,12 +161,14 @@ test('renders connectors and connection marks for every timing endpoint member',
   assert.ok(svg.indexOf('class="signal-row"') < svg.indexOf('class="relation-lane timing"'));
 });
 
-test('renders vertical timing connectors in light gray while timing controls stay blue', () => {
+test('renders dark waveform paths, black timing connectors, and compact filled double arrows', () => {
   const svg = renderSvg(waveformWithTiming());
 
-  assert.match(svg, /\.relation-lane\.timing \.timing-connector\{(?=[^}]*stroke:#cbd3df)(?=[^}]*pointer-events:none)[^}]*\}/);
+  assert.match(svg, /\.waveform-path\{(?=[^}]*stroke:#2a3038)[^}]*\}/);
+  assert.match(svg, /\.relation-lane\.timing \.timing-connector\{(?=[^}]*stroke:#1c1f24)(?=[^}]*pointer-events:none)[^}]*\}/);
   assert.match(svg, /\.relation-lane\{color:#245c9f\}/);
-  assert.match(svg, /class="relation-arrow"/);
+  assert.match(svg, /<marker id="arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto-start-reverse"><path d="M 0 0 L 6 3 L 0 6 Z" fill="currentColor"\/><\/marker>/);
+  assert.match(svg, /class="relation-arrow"[^>]*marker-start="url\(#arrow\)"[^>]*marker-end="url\(#arrow\)"/);
   assert.match(svg, /class="timing-connection-mark (?:start|end)"[^>]*fill="currentColor"/);
 });
 

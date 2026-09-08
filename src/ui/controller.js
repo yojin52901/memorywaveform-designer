@@ -29,6 +29,7 @@ import { createTimelineLayout } from '../render/timeline-layout.js';
 import {
   appendHistoryEntry,
   createHistoryEntry,
+  deleteHistoryEntry,
   loadHistory,
   replaceActiveHistoryEntry,
   saveHistory,
@@ -313,9 +314,9 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
 
 function historyDisclosureMarkup(history, activeHistoryId) {
   const historyItems = [...history.entries].sort((a, b) => b.updatedAt - a.updatedAt).map((entry) => `
-    <button type="button" class="history-item${entry.id === activeHistoryId ? ' active' : ''}" data-history-id="${escapeHtml(entry.id)}">
+    <div class="history-row"><button type="button" class="history-item${entry.id === activeHistoryId ? ' active' : ''}" data-history-id="${escapeHtml(entry.id)}">
       <strong>${escapeHtml(entry.title)}</strong><span>${escapeHtml(new Date(entry.updatedAt).toLocaleString())}</span>
-    </button>`).join('');
+    </button><button type="button" class="history-delete" data-delete-history-id="${escapeHtml(entry.id)}" aria-label="Delete ${escapeHtml(entry.title)} from history" title="Delete history record">×</button></div>`).join('');
   return `<details class="history-disclosure"><summary>Document history <span>${history.entries.length}</span></summary><div class="history-list">${historyItems}</div></details>`;
 }
 
@@ -769,6 +770,27 @@ export function createEditor(root = document) {
     }
   });
   palette.addEventListener('click', (event) => {
+    const deleteHistoryId = event.target.closest('[data-delete-history-id]')?.dataset.deleteHistoryId;
+    if (deleteHistoryId) {
+      const entry = state.history.entries.find((item) => item.id === deleteHistoryId);
+      if (!entry || !window.confirm(`Delete ${entry.title} from document history?`)) return;
+      let history = deleteHistoryEntry(state.history, deleteHistoryId);
+      if (!history.entries.length) {
+        history = appendHistoryEntry(history, createHistoryEntry(createDocument({ title: 'Untitled waveform' })));
+      }
+      const selected = selectHistoryEntry(history, history.activeId);
+      state.history = selected.history;
+      state.document = selected.document;
+      state.mode = selected.mode;
+      state.validation = selected.validation;
+      state.view = 'waveform';
+      state.selectedTransitionId = null;
+      state.repairText = selected.repairText;
+      saveHistory(storage, state.history);
+      setNotice(`Deleted ${entry.title} from document history.`);
+      render();
+      return;
+    }
     const historyId = event.target.closest('[data-history-id]')?.dataset.historyId;
     if (historyId) {
       const selected = selectHistoryEntry(state.history, historyId);
