@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createDocument } from '../src/domain/document.js';
-import { addPhase, addSignal, addTimingParameter, setSegmentBoundary, setTimingParameterPosition } from '../src/domain/operations.js';
+import { addPhase, addSignal, addTimingParameter, setPhasePosition, setSegmentBoundary, setTimingParameterPosition } from '../src/domain/operations.js';
 import { renderSvg } from '../src/render/svg-renderer.js';
 
 function waveformWithTiming() {
@@ -30,6 +30,10 @@ function waveformWithTimingAndPhase() {
 
 function timingGroupFor(svg, parameterId) {
   return svg.match(new RegExp(`<g class="relation-lane timing"[^>]*data-relation-id="${parameterId}"[\\s\\S]*?</g>`))?.[0] ?? '';
+}
+
+function phaseGroupFor(svg, phaseId) {
+  return svg.match(new RegExp(`<g class="relation-lane phase"[^>]*data-relation-id="${phaseId}"[\\s\\S]*?</g>`))?.[0] ?? '';
 }
 
 function connectorTargetYs(group) {
@@ -120,6 +124,20 @@ test('renders a vertically positioned timing parameter over the signal layer', (
   assert.equal(y, 90.66664);
   assert.ok(y >= 60 && y <= 150, `expected timing y inside the signal plot, received ${y}`);
   assert.ok(svg.indexOf('class="signal-row"') < svg.indexOf('class="relation-lane timing"'));
+});
+
+test('renders a vertically positioned phase with connectors to both transition points', () => {
+  const document = waveformWithTimingAndPhase();
+  const phaseId = document.semantic.phases[0].id;
+  const positioned = setPhasePosition(document, { phaseId, position: 0.25 });
+  const phaseGroup = phaseGroupFor(renderSvg(positioned), phaseId);
+
+  assert.match(phaseGroup, /data-relation-kind="phase"/);
+  assert.match(phaseGroup, /data-phase-position="0.25"/);
+  assert.match(phaseGroup, /data-relation-y="84"/);
+  assert.match(phaseGroup, /class="phase-connector start"[^>]*x1="320"[^>]*x2="320"[^>]*y1="84"[^>]*y2="104"/);
+  assert.match(phaseGroup, /class="phase-connector end"[^>]*x1="470"[^>]*x2="470"[^>]*y1="84"[^>]*y2="104"/);
+  assert.match(phaseGroup, /class="relation-drag-target"/);
 });
 
 test('renders connectors and connection marks for every timing endpoint member', () => {

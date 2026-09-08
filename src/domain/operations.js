@@ -291,6 +291,9 @@ export function deleteSignal(document, signalId) {
   if (next.presentation.timingParameterPositions) {
     for (const parameterId of parameterIds) delete next.presentation.timingParameterPositions[parameterId];
   }
+  if (next.presentation.phasePositions) {
+    for (const phaseId of phaseIds) delete next.presentation.phasePositions[phaseId];
+  }
   removeUnusedMarkers(next);
   return next;
 }
@@ -552,6 +555,9 @@ export function deleteTransitionWithDependencies(document, transitionId, { casca
     if (next.presentation.timingParameterPositions) {
       for (const parameterId of parameterIds) delete next.presentation.timingParameterPositions[parameterId];
     }
+    if (next.presentation.phasePositions) {
+      for (const phaseId of phaseIds) delete next.presentation.phasePositions[phaseId];
+    }
   }
   const nextTransition = next.semantic.transitions.find((item) => item.id === transitionId);
   const { left, right } = segmentPairForTransition(next, nextTransition);
@@ -623,6 +629,20 @@ export function setTimingParameterPosition(document, { parameterId, position }) 
   return next;
 }
 
+export function setPhasePosition(document, { phaseId, position }) {
+  if (!document.semantic.phases.some((item) => item.id === phaseId)) {
+    throw new Error('Phase does not exist.');
+  }
+  const normalizedPosition = Number(position);
+  if (!Number.isFinite(normalizedPosition) || normalizedPosition < 0 || normalizedPosition > 1) {
+    throw new Error('Phase position must be between 0 and 1.');
+  }
+  const next = cloneDocument(document);
+  next.presentation.phasePositions ??= {};
+  next.presentation.phasePositions[phaseId] = Math.round(normalizedPosition * 1_000_000) / 1_000_000;
+  return next;
+}
+
 export function updateTimingParameter(document, parameterId, updates) {
   const current = document.semantic.timingParameters.find((item) => item.id === parameterId);
   if (!current) throw new Error('Timing parameter does not exist.');
@@ -665,6 +685,8 @@ export function addPhase(document, { name, startTransitionId, endTransitionId, t
   const phase = { id: createObjectId(next, 'phase'), name: name.trim(), startTransitionId, endTransitionId, tags: [...tags] };
   next.semantic.phases.push(phase);
   next.presentation.timingLaneOrder.push(phase.id);
+  next.presentation.phasePositions ??= {};
+  next.presentation.phasePositions[phase.id] = Math.min(0.8, 0.2 + (next.semantic.phases.length - 1) * 0.12);
   return next;
 }
 

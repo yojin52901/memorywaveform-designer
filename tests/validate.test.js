@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createDocument } from '../src/domain/document.js';
-import { addSignal, addTimingParameter, setSegmentBoundary, updateTimingParameter } from '../src/domain/operations.js';
+import { addPhase, addSignal, addTimingParameter, setSegmentBoundary, updateTimingParameter } from '../src/domain/operations.js';
 import { validateDocument } from '../src/domain/validate.js';
 
 function validWaveform() {
@@ -120,6 +120,23 @@ test('rejects invalid or dangling timing parameter presentation positions', () =
   assert.equal(result.valid, false);
   assert.match(result.errors.join('\n'), /position.*between 0 and 1/i);
   assert.match(result.errors.join('\n'), /missing timing parameter/i);
+});
+
+test('rejects invalid or dangling phase presentation positions', () => {
+  const withTiming = validWaveform();
+  const [startTransition, endTransition] = withTiming.semantic.transitions;
+  const document = addPhase(withTiming, {
+    name: 'write cycle', startTransitionId: startTransition.id, endTransitionId: endTransition.id
+  });
+  const phaseId = document.semantic.phases[0].id;
+  document.presentation.phasePositions[phaseId] = -0.1;
+  document.presentation.phasePositions.phase_missing = 0.5;
+
+  const result = validateDocument(document);
+
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join('\n'), /phase.*position.*between 0 and 1/i);
+  assert.match(result.errors.join('\n'), /missing phase/i);
 });
 
 test('rejects slot width entries with invalid boundary keys or values', () => {

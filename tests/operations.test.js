@@ -12,6 +12,7 @@ import {
   moveSignalRow,
   moveTransition,
   rebindTimingEndpoint,
+  setPhasePosition,
   setSlotWidth,
   setTimingParameterPosition,
   setSegmentBoundary,
@@ -165,6 +166,17 @@ test('saving a timing position rounds to six decimal places', () => {
   });
 
   assert.equal(updated.presentation.timingParameterPositions[document.semantic.timingParameters[0].id], 0.123457);
+});
+
+test('moving a phase vertically changes only its presentation position', () => {
+  const { document } = phaseMoveFixture();
+  const phaseId = document.semantic.phases[0].id;
+
+  const moved = setPhasePosition(document, { phaseId, position: 0.6666667 });
+
+  assert.equal(moved.presentation.phasePositions[phaseId], 0.666667);
+  assert.deepEqual(moved.semantic, document.semantic);
+  assert.equal(document.presentation.phasePositions[phaseId], 0.2);
 });
 
 test('splitting HIGH to LOW creates a derived falling transition', () => {
@@ -626,6 +638,16 @@ test('deleting a signal removes its transitions and dependent presentation refer
   assert.equal(deleted.semantic.transitions.length, 0);
   assert.deepEqual(deleted.presentation.signalRowOrder, []);
   assert.deepEqual(deleted.semantic.timeline.timeMarkers, []);
+});
+
+test('deleting a signal removes a dependent phase presentation position', () => {
+  const { document, startTransition } = phaseMoveFixture();
+  const phaseId = document.semantic.phases[0].id;
+  const deleted = deleteSignal(document, startTransition.signalId);
+
+  assert.equal(deleted.semantic.phases.some((phase) => phase.id === phaseId), false);
+  assert.equal(phaseId in deleted.presentation.phasePositions, false);
+  assert.equal(validateDocument(deleted).valid, true);
 });
 
 test('cascading a transition deletion removes annotations on every deleted object', () => {

@@ -73,6 +73,14 @@ function waveformWithTiming() {
   });
 }
 
+function waveformWithPhase() {
+  const withTiming = waveformWithTiming();
+  const [startTransition, endTransition] = withTiming.semantic.transitions;
+  return addPhase(withTiming, {
+    name: 'write cycle', startTransitionId: startTransition.id, endTransitionId: endTransition.id
+  });
+}
+
 function historyPayload(activeDocument, otherDocument = null) {
   const entries = [{ id: 'active', title: activeDocument.metadata?.title ?? 'Broken', updatedAt: 2, snapshot: activeDocument }];
   if (otherDocument) entries.push({ id: 'other', title: otherDocument.metadata?.title ?? 'Broken', updatedAt: 1, snapshot: otherDocument });
@@ -565,6 +573,72 @@ function timingDragHarness(contract, surface) {
   return { anchoredNodes, attributes, group, notices, parameterId, pointer, renderCount: () => renderCount, state, surface, svg };
 }
 
+function phaseDragHarness() {
+  const document = waveformWithPhase();
+  const phaseId = document.semantic.phases[0].id;
+  const attributes = new Map();
+  const phaseConnectors = [
+    { className: 'phase-connector start', values: new Map([['y1', '80'], ['y2', '104']]) },
+    { className: 'phase-connection-mark start', values: new Map([['cy', '104']]) }
+  ].map((node) => ({
+    ...node,
+    classList: { contains: (name) => node.className.split(/\s+/).includes(name) },
+    getAttribute: (name) => node.values.get(name) ?? null,
+    setAttribute: (name, value) => node.values.set(name, String(value))
+  }));
+  const group = {
+    classList: classList(),
+    dataset: { relationId: phaseId, relationKind: 'phase', relationY: '80', phasePosition: '0.2' },
+    attributes,
+    querySelectorAll: () => phaseConnectors,
+    removeAttribute(name) { attributes.delete(name); },
+    setAttribute(name, value) { attributes.set(name, value); }
+  };
+  const surface = {
+    closest(selector) {
+      if (selector === '[data-relation-kind="phase"][data-relation-id]') return group;
+      return null;
+    }
+  };
+  const svg = eventNode();
+  svg.dataset = { timingTopY: '64', timingBottomY: '144' };
+  svg.viewBox = { baseVal: { width: 860, height: 300 } };
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 860, height: 300 });
+  svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+  svg.querySelector = (selector) => selector === `[data-relation-kind="phase"][data-relation-id="${phaseId}"]` ? group : null;
+  const status = eventNode();
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : null;
+  const state = { document, drag: null, relationCreation: null, selectedTransitionId: null };
+  let renderCount = 0;
+  bindCanvasPointerEvents(svg, {
+    root: { elementFromPoint: () => null },
+    editor,
+    getState: () => state,
+    applyOperation(operation) {
+      state.document = operation(state.document);
+      renderCount += 1;
+    },
+    setNotice: () => {},
+    render() {
+      renderCount += 1;
+      group.removeAttribute('transform');
+    },
+    showDragFeedback: () => {},
+    clearDragFeedback: () => {},
+    dragMessage: (_drag, position) => `position:${position}`
+  });
+  const pointer = (clientY) => ({
+    target: surface,
+    pointerId: 7,
+    clientX: 320,
+    clientY,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return { attributes, group, phaseConnectors, phaseId, pointer, renderCount: () => renderCount, state, svg };
+}
+
 test('timing drag preview keeps connector transition anchors fixed while the arrow moves', () => {
   const contract = renderedTimingContract();
   const harness = timingDragHarness(contract, contract.surfaces[0].node);
@@ -579,6 +653,29 @@ test('timing drag preview keeps connector transition anchors fixed while the arr
   assert.equal(Number(connector.getAttribute('y1')) + translatedBy, 124, 'connector arrow end follows the preview');
   assert.equal(Number(connector.getAttribute('y2')) + translatedBy, 104, 'connector transition end stays anchored');
   assert.equal(Number(mark.getAttribute('cy')) + translatedBy, 104, 'transition mark stays anchored');
+});
+
+test('phase drag preview keeps endpoint connectors fixed and commits only on release', () => {
+  const harness = phaseDragHarness();
+  const before = structuredClone(harness.state.document);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(80));
+  harness.svg.dispatch('pointermove', harness.pointer(124));
+
+  const connector = harness.phaseConnectors.find((node) => node.classList.contains('phase-connector'));
+  const mark = harness.phaseConnectors.find((node) => node.classList.contains('phase-connection-mark'));
+  assert.equal(harness.state.drag?.kind, 'phase-position');
+  assert.equal(harness.attributes.get('transform'), 'translate(0 44)');
+  assert.equal(Number(connector.getAttribute('y1')) + 44, 124, 'phase arrow end follows the preview');
+  assert.equal(Number(connector.getAttribute('y2')) + 44, 104, 'phase transition end stays anchored');
+  assert.equal(Number(mark.getAttribute('cy')) + 44, 104, 'phase transition mark stays anchored');
+  assert.deepEqual(harness.state.document, before);
+
+  harness.svg.dispatch('pointerup', harness.pointer(140));
+
+  assert.equal(harness.state.drag, null);
+  assert.equal(harness.state.document.presentation.phasePositions[harness.phaseId], 0.75);
+  assert.equal(harness.renderCount(), 1);
 });
 
 test('createEditor timing drag lifecycle commits the final preview from each rendered timing surface', () => {

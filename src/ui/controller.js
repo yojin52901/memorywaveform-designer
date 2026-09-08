@@ -13,6 +13,7 @@ import {
   moveSignalRow,
   moveTransition,
   rebindTimingEndpoint,
+  setPhasePosition,
   setSlotWidth,
   setTimingParameterPosition,
   setSegmentBoundary,
@@ -391,6 +392,8 @@ export function bindCanvasPointerEvents(svg, {
     const slotResize = event.target.closest('[data-slot-resize-start-marker-id]');
     const relationEndpoint = event.target.closest('[data-relation-endpoint]');
     const timingRelation = event.target.closest('[data-relation-kind="timing"][data-relation-id]');
+    const phaseRelation = event.target.closest('[data-relation-kind="phase"][data-relation-id]');
+    const positionedRelation = timingRelation ?? phaseRelation;
     const transition = event.target.closest('[data-transition-id]');
     const marker = event.target.closest('[data-marker-id]');
     if (slotResize) {
@@ -407,20 +410,29 @@ export function bindCanvasPointerEvents(svg, {
         relationKind: relationEndpoint.dataset.relationKind,
         endpoint: relationEndpoint.dataset.relationEndpoint
       };
-    } else if (timingRelation) {
-      const storedPosition = state.document.presentation?.timingParameterPositions?.[timingRelation.dataset.relationId];
-      const transitionAnchors = [...timingRelation.querySelectorAll('.timing-connector, .timing-connection-mark')]
+    } else if (positionedRelation) {
+      const relationKind = positionedRelation.dataset.relationKind;
+      const positionById = relationKind === 'timing'
+        ? state.document.presentation?.timingParameterPositions
+        : state.document.presentation?.phasePositions;
+      const storedPosition = positionById?.[positionedRelation.dataset.relationId];
+      const connectorClass = relationKind === 'timing' ? 'timing-connector' : 'phase-connector';
+      const connectionMarkClass = relationKind === 'timing' ? 'timing-connection-mark' : 'phase-connection-mark';
+      const transitionAnchors = [...positionedRelation.querySelectorAll(`.${connectorClass}, .${connectionMarkClass}`)]
         .map((element) => {
-          const attribute = element.classList.contains('timing-connector') ? 'y2' : 'cy';
+          const attribute = element.classList.contains(connectorClass) ? 'y2' : 'cy';
           return { element, attribute, value: Number(element.getAttribute(attribute)) };
         })
         .filter((anchor) => Number.isFinite(anchor.value));
       state.drag = {
-        kind: 'timing-position',
-        id: timingRelation.dataset.relationId,
-        originalY: Number(timingRelation.dataset.relationY),
-        grabOffsetY: pointerSvgY(svg, event) - Number(timingRelation.dataset.relationY),
-        position: Number.isFinite(storedPosition) ? storedPosition : Number(timingRelation.dataset.timingPosition),
+        kind: `${relationKind}-position`,
+        id: positionedRelation.dataset.relationId,
+        relationKind,
+        originalY: Number(positionedRelation.dataset.relationY),
+        grabOffsetY: pointerSvgY(svg, event) - Number(positionedRelation.dataset.relationY),
+        position: Number.isFinite(storedPosition)
+          ? storedPosition
+          : Number(positionedRelation.dataset[relationKind === 'timing' ? 'timingPosition' : 'phasePosition']),
         transitionAnchors
       };
     } else if (transition && state.relationCreation) {
@@ -432,7 +444,7 @@ export function bindCanvasPointerEvents(svg, {
       state.drag = { kind: 'marker', id: marker.dataset.markerId };
     } else return;
     svg.setPointerCapture(event.pointerId);
-    showDragFeedback(svg, state.drag, slotResize ?? relationEndpoint ?? timingRelation ?? transition ?? marker);
+    showDragFeedback(svg, state.drag, slotResize ?? relationEndpoint ?? positionedRelation ?? transition ?? marker);
     event.stopPropagation();
     event.preventDefault();
   });
@@ -446,15 +458,15 @@ export function bindCanvasPointerEvents(svg, {
         ...(state.document.presentation?.slotWidthUnits ?? {}),
         [state.drag.startMarkerId]: state.drag.widthUnits
       }, event.pointerId, state.drag);
-    } else if (state.drag.kind === 'timing-position') {
+    } else if (state.drag.kind === 'timing-position' || state.drag.kind === 'phase-position') {
       const position = timingPositionFromPointer(svg, event, { grabOffsetY: state.drag.grabOffsetY });
       state.drag.position = position;
       const top = Number(svg.dataset.timingTopY);
       const bottom = Number(svg.dataset.timingBottomY);
       const previewY = top + (bottom - top) * position;
-      const timingRelation = svg.querySelector(`[data-relation-kind="timing"][data-relation-id="${state.drag.id}"]`);
+      const positionedRelation = svg.querySelector(`[data-relation-kind="${state.drag.relationKind}"][data-relation-id="${state.drag.id}"]`);
       const translation = previewY - state.drag.originalY;
-      timingRelation?.setAttribute('transform', `translate(0 ${translation})`);
+      positionedRelation?.setAttribute('transform', `translate(0 ${translation})`);
       state.drag.transitionAnchors.forEach(({ element, attribute, value }) => {
         element.setAttribute(attribute, String(value - translation));
       });
@@ -481,6 +493,10 @@ export function bindCanvasPointerEvents(svg, {
     }
     if (drag.kind === 'timing-position') {
       applyOperation((documentModel) => setTimingParameterPosition(documentModel, { parameterId: drag.id, position: drag.position }));
+      return;
+    }
+    if (drag.kind === 'phase-position') {
+      applyOperation((documentModel) => setPhasePosition(documentModel, { phaseId: drag.id, position: drag.position }));
       return;
     }
     if (drag.kind === 'relation-endpoint') {
@@ -616,6 +632,11 @@ export function createEditor(root = document) {
       const parameter = state.document.semantic.timingParameters.find((item) => item.id === drag.id);
       const position = targetSequence ?? state.document.presentation?.timingParameterPositions?.[drag.id] ?? 0.2;
       return `Moving timing parameter · ${parameter?.name ?? drag.id}. Vertical position: ${Math.round(position * 100)}%.`;
+    }
+    if (drag.kind === 'phase-position') {
+      const phase = state.document.semantic.phases.find((item) => item.id === drag.id);
+      const position = targetSequence ?? state.document.presentation?.phasePositions?.[drag.id] ?? 0.2;
+      return `Moving phase · ${phase?.name ?? drag.id}. Vertical position: ${Math.round(position * 100)}%.`;
     }
     const suffix = targetSequence === null ? 'Release to place it.' : `Target order slot: #${targetSequence}.`;
     if (drag.kind === 'transition') {

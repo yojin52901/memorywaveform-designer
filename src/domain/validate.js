@@ -175,6 +175,12 @@ function validateAnnotationsAndPresentation(document, refs, errors) {
       errors.push(`Timing parameter ${parameterId} position must be between 0 and 1.`);
     }
   }
+  for (const [phaseId, position] of Object.entries(document.presentation?.phasePositions ?? {})) {
+    if (!refs.phases.has(phaseId)) errors.push(`Presentation position references missing phase ${phaseId}.`);
+    if (!Number.isFinite(position) || position < 0 || position > 1) {
+      errors.push(`Phase ${phaseId} position must be between 0 and 1.`);
+    }
+  }
   for (const [boundaryId, widthUnits] of Object.entries(document.presentation?.slotWidthUnits ?? {})) {
     const isLeadingBoundary = boundaryId === TIMELINE_START_ID || refs.markers.has(boundaryId);
     if (!isLeadingBoundary || boundaryId === TIMELINE_END_ID) {
@@ -205,6 +211,11 @@ export function validateDocument(document) {
     typeof document.presentation.timingParameterPositions !== 'object' ||
     Array.isArray(document.presentation.timingParameterPositions)
   )) errors.push('presentation.timingParameterPositions must be an object.');
+  if (document.presentation.phasePositions !== undefined && (
+    !document.presentation.phasePositions ||
+    typeof document.presentation.phasePositions !== 'object' ||
+    Array.isArray(document.presentation.phasePositions)
+  )) errors.push('presentation.phasePositions must be an object.');
   if (document.presentation.slotWidthUnits !== undefined && (
     !document.presentation.slotWidthUnits ||
     typeof document.presentation.slotWidthUnits !== 'object' ||
