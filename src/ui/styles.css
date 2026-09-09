@@ -54,7 +54,13 @@ textarea { min-height: 62px; resize: vertical; }
 .view-switcher button.active { background: #fff; box-shadow: 0 1px 3px #9aabc533; color: #1e5fa8; }
 #document-json-view { background: #101724; border-radius: 9px; color: #d9e6fb; font: .78rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; max-height: 680px; overflow: auto; padding: 16px; white-space: pre; }
 .drag-hint { text-align: right; }
-#waveform-canvas { overflow: auto; }
+.waveform-shell { display: flex; min-width: 0; }
+#signal-label-rail { background: #fff; border-right: 1px solid #dbe3ef; flex: 0 0 170px; overflow: hidden; position: relative; z-index: 1; }
+.signal-label-rail-spacer { height: 98px; }
+.signal-label-rail-row { height: 94px; padding: 0 16px; }
+.signal-label-rail-row strong { color: #172033; display: block; font-size: 14px; line-height: 17px; }
+.signal-label-rail-row span { color: #738198; display: block; font-size: 11px; line-height: 14px; margin-top: 3px; }
+#waveform-canvas { flex: 1 1 auto; min-width: 0; overflow: auto; }
 #waveform-canvas, #waveform-canvas * { -webkit-user-select: none; user-select: none; }
 #waveform-canvas svg { background: #fff; display: block; min-width: 100%; touch-action: none; }
 #waveform-canvas.is-dragging, #waveform-canvas.is-dragging * { cursor: grabbing !important; }

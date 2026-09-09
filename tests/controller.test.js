@@ -380,6 +380,18 @@ test('waveform rendering reserves a stable drag feedback slot above the canvas',
   assert.ok(markup.indexOf('class="drag-status-slot"') < markup.indexOf('id="waveform-canvas"'));
 });
 
+test('waveform editor keeps signal labels in a fixed rail beside the scrollable timeline', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'LOW' });
+  document.presentation.signalRowOrder = [document.semantic.signals[1].id, document.semantic.signals[0].id];
+
+  const markup = renderEditorMarkup(document, { mode: 'editor', validation: { valid: true, errors: [], warnings: [] } });
+
+  assert.match(markup, /<div class="waveform-shell">/);
+  assert.match(markup, new RegExp(`<aside id="signal-label-rail"[^>]*>[\\s\\S]*?data-signal-label-id="${document.semantic.signals[1].id}"[\\s\\S]*?CE#[\\s\\S]*?data-signal-label-id="${document.semantic.signals[0].id}"[\\s\\S]*?WE#[\\s\\S]*?<\\/aside>`));
+  assert.ok(markup.indexOf('id="signal-label-rail"') < markup.indexOf('id="waveform-canvas"'));
+});
+
 test('invalid and repair modes never expose the JSON projection switch', () => {
   const document = createDocument({ title: 'Program' });
   const invalid = renderEditorMarkup(document, { mode: 'editor', validation: { valid: false, errors: ['Broken'], warnings: [] }, view: 'json' });
@@ -726,6 +738,77 @@ test('relation endpoints retain pointerdown priority over their timing group', (
   assert.deepEqual(harness.state.drag, {
     kind: 'relation-endpoint', relationId: harness.parameterId, relationKind: 'timing', endpoint: 'start'
   });
+});
+
+function canvasPanHarness({ interactive = false } = {}) {
+  const state = { document: createDocument({ title: 'Program' }), drag: null, relationCreation: null, selectedTransitionId: null };
+  const status = eventNode();
+  const canvas = eventNode();
+  canvas.scrollLeft = 180;
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : selector === '#waveform-canvas' ? canvas : null;
+  const panSurface = eventNode();
+  const transition = { dataset: { transitionId: 'tr_existing' } };
+  panSurface.closest = (selector) => {
+    if (interactive && selector === '[data-transition-id]') return transition;
+    return selector === '[data-canvas-pan-surface]' ? panSurface : null;
+  };
+  const svg = eventNode();
+  svg.dataset = {};
+  svg.viewBox = { baseVal: { width: 690, height: 300 } };
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 690, height: 300 });
+  svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+  let operationCount = 0;
+  let renderCount = 0;
+  bindCanvasPointerEvents(svg, {
+    root: { body: eventNode(), elementFromPoint: () => null },
+    editor,
+    getState: () => state,
+    applyOperation() { operationCount += 1; },
+    setNotice() {},
+    render() { renderCount += 1; },
+    previewCanvas() {},
+    showDragFeedback() {},
+    clearDragFeedback() {},
+    dragMessage: (drag) => drag.kind
+  });
+  const pointer = (clientX) => ({
+    target: panSurface,
+    pointerId: 13,
+    clientX,
+    clientY: 180,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return { canvas, operationCount: () => operationCount, pointer, renderCount: () => renderCount, state, svg };
+}
+
+test('dragging a passive waveform surface pans horizontally without changing the document', () => {
+  const harness = canvasPanHarness();
+  const before = structuredClone(harness.state.document);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(400));
+  harness.svg.dispatch('pointermove', harness.pointer(280));
+
+  assert.equal(harness.state.drag?.kind, 'canvas-pan');
+  assert.equal(harness.canvas.scrollLeft, 300);
+  assert.equal(harness.operationCount(), 0);
+  assert.deepEqual(harness.state.document, before);
+
+  harness.svg.dispatch('pointerup', harness.pointer(280));
+
+  assert.equal(harness.state.drag, null);
+  assert.equal(harness.operationCount(), 0);
+  assert.equal(harness.renderCount(), 0);
+});
+
+test('an interactive waveform target retains pointerdown priority over canvas panning', () => {
+  const harness = canvasPanHarness({ interactive: true });
+
+  harness.svg.dispatch('pointerdown', harness.pointer(400));
+
+  assert.deepEqual(harness.state.drag, { kind: 'transition', id: 'tr_existing' });
+  assert.equal(harness.canvas.scrollLeft, 180);
 });
 
 function slotResizeHarness() {

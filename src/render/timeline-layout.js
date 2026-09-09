@@ -1,13 +1,14 @@
 import { BASE_SLOT_WIDTH, SLOT_WIDTH_UNIT_MAX, SLOT_WIDTH_UNIT_MIN } from '../domain/constants.js';
 
 const LEFT_X = 170;
+const DEFAULT_CANVAS_WIDTH = 860;
 
 function normalizedWidthUnits(value) {
   if (!Number.isFinite(value)) return 1;
   return Math.max(SLOT_WIDTH_UNIT_MIN, Math.min(SLOT_WIDTH_UNIT_MAX, value));
 }
 
-export function createTimelineLayout(document, { slotWidthUnits = {} } = {}) {
+export function createTimelineLayout(document, { slotWidthUnits = {}, leftX = LEFT_X, minimumWidth = DEFAULT_CANVAS_WIDTH } = {}) {
   const timeline = document.semantic.timeline;
   const markers = [...timeline.timeMarkers].sort((left, right) => left.sequence - right.sequence);
   const boundaries = [
@@ -19,7 +20,7 @@ export function createTimelineLayout(document, { slotWidthUnits = {} } = {}) {
   const resolvedWidths = { ...persistedWidths, ...slotWidthUnits };
   const markerX = new Map();
   const gaps = [];
-  let x = LEFT_X;
+  let x = leftX;
 
   for (let index = 0; index < boundaries.length - 1; index += 1) {
     const startMarkerId = boundaries[index];
@@ -34,9 +35,9 @@ export function createTimelineLayout(document, { slotWidthUnits = {} } = {}) {
 
   const endX = x;
   return {
-    leftX: LEFT_X,
+    leftX,
     endX,
-    width: Math.max(860, endX + 80),
+    width: Math.max(minimumWidth, endX + 80),
     markerX,
     gaps,
     slotCoordinateForX(xCoordinate) {

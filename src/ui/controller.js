@@ -313,6 +313,21 @@ export function renderInspectorMarkup(documentModel, selectedTransitionId = null
     ${selected ? `<section class="selection-card"><h3>Edit selected transition</h3><code>${escapeHtml(selected.id)}</code><p>${escapeHtml(`${selected.fromState} → ${selected.toState}`)}</p><form class="tool-form" data-form="transition-edit"><input type="hidden" name="transitionId" value="${escapeHtml(selected.id)}" /><label>Signal<select name="signalId">${signalOptions}</select></label><label>Order slot<input name="sequence" type="number" step="1" value="${escapeHtml(selectedSequence)}" required /></label><label>State after transition<select name="rightState">${STATES.map((item) => option(item, item, selected.toState === item)).join('')}</select></label><button class="button secondary" type="submit">Save transition</button></form><p class="muted">Dependencies: ${dependencies.timingParameters.length} timing, ${dependencies.phases.length} phases</p><button id="delete-transition" class="button danger" type="button">Delete transition</button></section>` : '<p class="muted">Click a transition point to inspect, edit, or delete it.</p>'}`;
 }
 
+function signalRowsForCanvas(documentModel) {
+  const signalsById = new Map(documentModel.semantic.signals.map((signal) => [signal.id, signal]));
+  const presentedIds = documentModel.presentation?.signalRowOrder?.filter((id) => signalsById.has(id)) ?? [];
+  return [
+    ...presentedIds.map((id) => signalsById.get(id)),
+    ...documentModel.semantic.signals.filter((signal) => !presentedIds.includes(signal.id))
+  ];
+}
+
+function renderSignalLabelRail(documentModel) {
+  return `<aside id="signal-label-rail" aria-label="Signal labels"><div class="signal-label-rail-spacer"></div>${signalRowsForCanvas(documentModel)
+    .map((signal) => `<div class="signal-label-rail-row" data-signal-label-id="${escapeHtml(signal.id)}"><strong>${escapeHtml(signal.name)}</strong><span>${escapeHtml(signal.type)}</span></div>`)
+    .join('')}</aside>`;
+}
+
 function historyDisclosureMarkup(history, activeHistoryId) {
   const historyItems = [...history.entries].sort((a, b) => b.updatedAt - a.updatedAt).map((entry) => `
     <div class="history-row"><button type="button" class="history-item${entry.id === activeHistoryId ? ' active' : ''}" data-history-id="${escapeHtml(entry.id)}">
@@ -371,7 +386,7 @@ export function renderEditorMarkup(documentModel, { mode, validation, view = 'wa
   const validationSummary = policy.draft ? `<section class="validation-summary" role="alert"><h3>Why this waveform is invalid</h3><p>Fix these ${errors.length} issue${errors.length === 1 ? '' : 's'} before exporting JSON.</p><ol class="error-list">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ol></section>` : '';
   const content = activeView === 'json'
     ? `<pre id="document-json-view">${escapeHtml(exportDocumentJson(documentModel))}</pre>`
-    : `<div class="drag-status-slot"><p id="drag-status" class="drag-status" aria-live="polite" hidden></p></div><div id="waveform-canvas">${renderSvg(documentModel, { draft: policy.draft })}</div>`;
+    : `<div class="drag-status-slot"><p id="drag-status" class="drag-status" aria-live="polite" hidden></p></div><div class="waveform-shell">${renderSignalLabelRail(documentModel)}<div id="waveform-canvas">${renderSvg(documentModel, { draft: policy.draft, includeSignalLabels: false, timelineLeftX: 0, minimumWidth: 690 })}</div></div>`;
   return `<section class="canvas-header"><div><h2>${activeView === 'json' ? 'Current document JSON' : 'Waveform canvas'}</h2><p>${policy.draft ? `Draft rendering: ${errors.length} validation issue${errors.length === 1 ? '' : 's'} need attention before JSON export.` : 'Validated semantic projection.'}</p></div>${switcher}</section>${validationSummary}${content}`;
 }
 
@@ -396,6 +411,7 @@ export function bindCanvasPointerEvents(svg, {
     const positionedRelation = timingRelation ?? phaseRelation;
     const transition = event.target.closest('[data-transition-id]');
     const marker = event.target.closest('[data-marker-id]');
+    const panSurface = event.target.closest('[data-canvas-pan-surface]');
     if (slotResize) {
       state.drag = {
         kind: 'slot-width',
@@ -442,9 +458,17 @@ export function bindCanvasPointerEvents(svg, {
       state.drag = { kind: 'transition', id: transition.dataset.transitionId };
     } else if (marker) {
       state.drag = { kind: 'marker', id: marker.dataset.markerId };
+    } else if (panSurface) {
+      const canvas = editor.querySelector('#waveform-canvas');
+      if (!canvas) return;
+      state.drag = {
+        kind: 'canvas-pan',
+        startClientX: event.clientX,
+        scrollLeft: canvas.scrollLeft
+      };
     } else return;
     svg.setPointerCapture(event.pointerId);
-    showDragFeedback(svg, state.drag, slotResize ?? relationEndpoint ?? positionedRelation ?? transition ?? marker);
+    showDragFeedback(svg, state.drag, slotResize ?? relationEndpoint ?? positionedRelation ?? transition ?? marker ?? panSurface);
     event.stopPropagation();
     event.preventDefault();
   });
@@ -452,7 +476,11 @@ export function bindCanvasPointerEvents(svg, {
     const state = getState();
     if (!state.drag) return;
     const status = editor.querySelector('#drag-status');
-    if (state.drag.kind === 'slot-width') {
+    if (state.drag.kind === 'canvas-pan') {
+      const canvas = editor.querySelector('#waveform-canvas');
+      if (canvas) canvas.scrollLeft = Math.max(0, state.drag.scrollLeft - (event.clientX - state.drag.startClientX));
+      if (status) status.textContent = dragMessage(state.drag);
+    } else if (state.drag.kind === 'slot-width') {
       state.drag.widthUnits = slotWidthFromPointer(svg, event, state.drag);
       previewCanvas({
         ...(state.document.presentation?.slotWidthUnits ?? {}),
@@ -483,6 +511,7 @@ export function bindCanvasPointerEvents(svg, {
     state.drag = null;
     clearDragFeedback(svg);
     event.preventDefault();
+    if (drag.kind === 'canvas-pan') return;
     if (drag.kind === 'slot-width') {
       drag.widthUnits = slotWidthFromPointer(svg, event, drag);
       applyOperation((documentModel) => setSlotWidth(documentModel, {
@@ -542,8 +571,10 @@ export function bindCanvasPointerEvents(svg, {
   svg.addEventListener('pointercancel', () => {
     const state = getState();
     if (!state.drag) return;
+    const drag = state.drag;
     state.drag = null;
     clearDragFeedback(svg);
+    if (drag.kind === 'canvas-pan') return;
     setNotice('Drag cancelled.');
     render();
   });
@@ -628,6 +659,7 @@ export function createEditor(root = document) {
   }
 
   function dragMessage(drag, targetSequence = null) {
+    if (drag.kind === 'canvas-pan') return 'Panning waveform canvas. Release to stop.';
     if (drag.kind === 'timing-position') {
       const parameter = state.document.semantic.timingParameters.find((item) => item.id === drag.id);
       const position = targetSequence ?? state.document.presentation?.timingParameterPositions?.[drag.id] ?? 0.2;

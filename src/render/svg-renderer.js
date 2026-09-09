@@ -48,7 +48,7 @@ function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
+export function renderSvg(document, { draft = false, slotWidthUnits, includeSignalLabels = true, timelineLeftX, minimumWidth } = {}) {
   const signalsById = new Map(document.semantic.signals.map((signal) => [signal.id, signal]));
   const presentedSignalIds = document.presentation?.signalRowOrder?.filter((id) => signalsById.has(id)) ?? [];
   const signalIds = [
@@ -56,7 +56,11 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
     ...document.semantic.signals.map((signal) => signal.id).filter((id) => !presentedSignalIds.includes(id))
   ];
   const markers = [...document.semantic.timeline.timeMarkers].sort((left, right) => left.sequence - right.sequence);
-  const layout = createTimelineLayout(document, { slotWidthUnits });
+  const layout = createTimelineLayout(document, {
+    slotWidthUnits,
+    leftX: timelineLeftX,
+    minimumWidth
+  });
   const { leftX, endX, width, markerX } = layout;
   const timingList = relationItems(document, 'timing');
   const phaseList = relationItems(document, 'phase');
@@ -105,7 +109,10 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
         return `<circle class="transition-target" data-transition-id="${escapeXml(transition.id)}" cx="${x}" cy="${baseY}" r="7"><title>${escapeXml(`${signal.name}: ${transition.fromState} → ${transition.toState}`)}</title></circle>`;
       }).join('');
     const segmentLabels = segments.map((segment) => `<text class="state-label ${stateClass(segment.state)}" x="${segment.endX - 4}" y="${stateY(baseY, segment.state) - 8}" text-anchor="end">${escapeXml(segment.state)}</text>`).join('');
-    return `<g class="signal-row" data-signal-id="${escapeXml(signal.id)}"><text class="signal-label" x="22" y="${baseY + 5}">${escapeXml(signal.name)}</text><text class="signal-type" x="22" y="${baseY + 23}">${escapeXml(signal.type)}</text><line class="row-guide" x1="${leftX}" x2="${endX}" y1="${baseY}" y2="${baseY}"/><path class="waveform-path" d="${path}"/>${unknownBands}${unknownBoundaries}${unknownCrosses}${segmentLabels}${transitionTargets}</g>`;
+    const signalLabels = includeSignalLabels
+      ? `<text class="signal-label" x="22" y="${baseY + 5}">${escapeXml(signal.name)}</text><text class="signal-type" x="22" y="${baseY + 23}">${escapeXml(signal.type)}</text>`
+      : '';
+    return `<g class="signal-row" data-signal-id="${escapeXml(signal.id)}">${signalLabels}<line class="row-guide" data-canvas-pan-surface="true" x1="${leftX}" x2="${endX}" y1="${baseY}" y2="${baseY}"/><path class="waveform-path" data-canvas-pan-surface="true" d="${path}"/>${unknownBands}${unknownBoundaries}${unknownCrosses}${segmentLabels}${transitionTargets}</g>`;
   }).join('');
 
   const markerColumns = markers.map((marker) => {
@@ -161,7 +168,7 @@ export function renderSvg(document, { draft = false, slotWidthUnits } = {}) {
   ).join('');
   const watermark = draft ? `<g class="draft-watermark"><text x="${width / 2}" y="${height / 2}" text-anchor="middle">DRAFT / INVALID</text></g>` : '';
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto-start-reverse"><path d="M 0 0 L 6 3 L 0 6 Z" fill="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#2a3038;stroke-width:3;stroke-linejoin:round}.state-unknown-band{pointer-events:none}.state-unknown-boundary{pointer-events:none;stroke:#2563eb;stroke-width:1.6}.state-unknown-cross{fill:none;pointer-events:none;stroke:#2563eb;stroke-width:1.6}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#2563eb}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.phase .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.phase .relation-arrow,.relation-lane.phase text{cursor:ns-resize}.relation-lane.timing .timing-connector{pointer-events:none;stroke:#1c1f24}.relation-lane.phase .phase-connector{pointer-events:none;stroke:#1c1f24}.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-lane.phase .phase-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.slot-resize-handle{cursor:ew-resize}.slot-resize-handle line{stroke:#5f718e;stroke-width:2;pointer-events:none}.slot-resize-handle circle{fill:transparent;stroke:#5f718e;stroke-width:2}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}${resizeHandles}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-timing-top-y="${timingTopY}" data-timing-bottom-y="${timingBottomY}" role="img" aria-label="${escapeXml(document.metadata?.title ?? 'Waveform')}"><defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto-start-reverse"><path d="M 0 0 L 6 3 L 0 6 Z" fill="currentColor"/></marker><style>.waveform-bg{fill:#fff}.row-guide,.marker-column line{stroke:#d9e1ee;stroke-dasharray:3 5}.signal-label{fill:#172033;font:700 14px system-ui}.signal-type{fill:#738198;font:11px system-ui}.waveform-path{fill:none;stroke:#2a3038;stroke-width:3;stroke-linejoin:round}.state-unknown-band{pointer-events:none}.state-unknown-boundary{pointer-events:none;stroke:#2563eb;stroke-width:1.6}.state-unknown-cross{fill:none;pointer-events:none;stroke:#2563eb;stroke-width:1.6}.state-label{font:10px system-ui}.state-known{fill:#2767a8}.state-unknown{fill:#2563eb}.state-unspecified{fill:#8794a8}.transition-target{fill:#fff;stroke:#123f75;stroke-width:2;cursor:pointer}.marker-column text{fill:#6d7b90;font:11px system-ui}.relation-lane{color:#245c9f}.relation-lane.phase{color:#8b4a12}.relation-lane line{stroke:currentColor;stroke-width:2}.relation-lane text{fill:currentColor;font:12px system-ui;font-weight:700}.relation-lane.timing .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.phase .relation-drag-target{cursor:ns-resize;stroke:#fff;stroke-opacity:.9;stroke-width:12}.relation-lane.timing .relation-arrow,.relation-lane.timing text{cursor:ns-resize}.relation-lane.phase .relation-arrow,.relation-lane.phase text{cursor:ns-resize}.relation-lane.timing .timing-connector{pointer-events:none;stroke:#1c1f24}.relation-lane.phase .phase-connector{pointer-events:none;stroke:#1c1f24}.relation-lane.timing .timing-connection-mark{pointer-events:none}.relation-lane.phase .phase-connection-mark{pointer-events:none}.relation-endpoint{fill:#fff;stroke:currentColor;stroke-width:2;cursor:ew-resize}.slot-resize-handle{cursor:ew-resize}.slot-resize-handle line{stroke:#5f718e;stroke-width:2;pointer-events:none}.slot-resize-handle circle{fill:transparent;stroke:#5f718e;stroke-width:2}.annotation{fill:#5a6474;font:12px system-ui}.draft-watermark text{fill:#c43333;fill-opacity:.2;font:700 52px system-ui;transform:rotate(-18deg);transform-origin:center}</style></defs><rect class="waveform-bg" data-canvas-pan-surface="true" width="100%" height="100%"/>${markerColumns}${rows}${phaseLanes}${timingLanes}${annotations}${watermark}${resizeHandles}</svg>`;
 }
 
 function loadSvgImage(source) {
