@@ -1,0 +1,1178 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { applyRelationEndpointDrop, bindCanvasPointerEvents, createEditor, pointerSvgY, relationEndpointUpdates, renderEditorMarkup, renderInspectorMarkup, renderPaletteMarkup, resolveDropTransitionId, sequenceFromPointer, timingEndpointIdsFromForm, timingEndpointSubmission, timingPositionFromPointer, transitionDependencyDeletePrompt } from '../src/ui/controller.js';
+import { createDocument } from '../src/domain/document.js';
+import { addAnnotation, addPhase, addSignal, addTimingParameter, moveSignalRow, setSegmentBoundary } from '../src/domain/operations.js';
+import { renderSvg } from '../src/render/svg-renderer.js';
+import { HISTORY_STORAGE_KEY } from '../src/ui/document-history.js';
+import { exportDocumentJson, loadDocumentJson } from '../src/domain/import-export.js';
+
+function classList() {
+  const values = new Set();
+  return {
+    add: (...names) => names.forEach((name) => values.add(name)),
+    remove: (...names) => names.forEach((name) => values.delete(name)),
+    contains: (name) => values.has(name)
+  };
+}
+
+function eventNode() {
+  const listeners = new Map();
+  return {
+    innerHTML: '',
+    value: '',
+    disabled: false,
+    textContent: '',
+    className: '',
+    classList: classList(),
+    addEventListener(type, handler) { listeners.set(type, handler); },
+    dispatch(type, event) { return listeners.get(type)?.(event); },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    appendChild(child) { return child; }
+  };
+}
+
+function memoryStorage(payload) {
+  const values = new Map(payload ? [[HISTORY_STORAGE_KEY, JSON.stringify(payload)]] : []);
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value)
+  };
+}
+
+function fakeEditorRoot(historyPayload) {
+  const elements = Object.fromEntries(['#palette', '#inspector', '#editor', '#document-status', '#export-json', '#export-png', '#import-json', '#new-document'].map((selector) => [selector, eventNode()]));
+  const repairApply = eventNode();
+  elements['#editor'].querySelector = (selector) => selector === '#repair-apply' ? repairApply : null;
+  const body = eventNode();
+  let notice = null;
+  body.appendChild = (child) => {
+    if (child.id === 'notice') notice = child;
+    return child;
+  };
+  return {
+    body,
+    defaultView: { localStorage: memoryStorage(historyPayload) },
+    querySelector: (selector) => selector === '#notice' ? notice : elements[selector] ?? null,
+    createElement: () => eventNode(),
+    elementFromPoint: () => null,
+    elements
+  };
+}
+
+function waveformWithTiming() {
+  const withSignal = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  const signalId = withSignal.semantic.signals[0].id;
+  const low = setSegmentBoundary(withSignal, { signalId, sequence: 10, rightState: 'LOW' });
+  const high = setSegmentBoundary(low, { signalId, sequence: 30, rightState: 'HIGH' });
+  return addTimingParameter(high, {
+    name: 'tWP',
+    startTransitionIds: [high.semantic.transitions[0].id],
+    endTransitionIds: [high.semantic.transitions[1].id]
+  });
+}
+
+function waveformWithPhase() {
+  const withTiming = waveformWithTiming();
+  const [startTransition, endTransition] = withTiming.semantic.transitions;
+  return addPhase(withTiming, {
+    name: 'write cycle', startTransitionId: startTransition.id, endTransitionId: endTransition.id
+  });
+}
+
+function historyPayload(activeDocument, otherDocument = null) {
+  const entries = [{ id: 'active', title: activeDocument.metadata?.title ?? 'Broken', updatedAt: 2, snapshot: activeDocument }];
+  if (otherDocument) entries.push({ id: 'other', title: otherDocument.metadata?.title ?? 'Broken', updatedAt: 1, snapshot: otherDocument });
+  return { activeId: 'active', entries };
+}
+
+test('every user can open the built-in example as a valid, exportable document', () => {
+  for (const payload of [undefined, historyPayload(waveformWithTiming())]) {
+    const root = fakeEditorRoot(payload);
+    const editor = createEditor(root);
+    const previousHistory = structuredClone(editor.getState().history.entries);
+    assert.match(root.elements['#palette'].innerHTML, /data-open-example/);
+    root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-open-example]' ? {} : null }
+    });
+    const state = editor.getState();
+    assert.equal(state.document.metadata.title, 'Example document — ENVM power-on, write & power-off');
+    assert.equal(state.validation.valid, true, JSON.stringify(state.validation.errors));
+    assert.equal(state.document.semantic.signals.length, 6);
+    assert.ok(state.document.semantic.timingParameters.some((parameter) => parameter.startTransitionIds.length > 1));
+    assert.equal(state.document.semantic.phases.length, 3);
+    assert.ok(state.document.semantic.stateSegments.some((segment) => segment.state === 'UNKNOWN'));
+    assert.deepEqual(state.history.entries.slice(0, -1).map(({ id, snapshot }) => ({ id, snapshot })), previousHistory.map(({ id, snapshot }) => ({ id, snapshot })));
+    assert.equal(loadDocumentJson(exportDocumentJson(state.document)).mode, 'editor');
+    assert.match(renderSvg(state.document), /phase-connector/);
+  }
+});
+
+test('opening the example again restores a fresh copy and keeps the edited copy in history', () => {
+  const root = fakeEditorRoot();
+  const editor = createEditor(root);
+  const openExample = () => root.elements['#palette'].dispatch('click', {
+    target: { closest: (selector) => selector === '[data-open-example]' ? {} : null }
+  });
+  openExample();
+  assert.equal(editor.getState().document.semantic.signals.length, 6);
+  const originalId = editor.getState().history.activeId;
+  editor.getState().document.metadata.title = 'My edited example';
+  openExample();
+  const state = editor.getState();
+  assert.notEqual(state.history.activeId, originalId);
+  assert.equal(state.document.metadata.title, 'Example document — ENVM power-on, write & power-off');
+  assert.equal(state.history.entries.find((entry) => entry.id === originalId).snapshot.metadata.title, 'My edited example');
+  assert.match(root.elements['#palette'].innerHTML, /data-open-example/);
+});
+
+test('opening the example after an invalid import preserves the previous saved document', async () => {
+  for (const text of ['{}', '{']) {
+    const root = fakeEditorRoot(historyPayload(waveformWithTiming()));
+    const editor = createEditor(root);
+    const previousHistory = structuredClone(editor.getState().history.entries);
+    root.elements['#import-json'].files = [{ text: async () => text }];
+    await root.elements['#import-json'].dispatch('change');
+    assert.equal(editor.getState().mode, 'repair');
+    root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-open-example]' ? {} : null }
+    });
+    assert.equal(editor.getState().mode, 'editor');
+    assert.equal(editor.getState().validation.valid, true);
+    assert.deepEqual(editor.getState().history.entries.slice(0, -1), previousHistory);
+  }
+});
+
+test('relation drop resolution uses the element under the pointer, not the captured SVG target', () => {
+  const target = { closest: (selector) => selector === '[data-transition-id]' ? { dataset: { transitionId: 'tr_target' } } : null };
+  const root = { elementFromPoint: () => target };
+
+  assert.equal(resolveDropTransitionId(root, 100, 80), 'tr_target');
+});
+
+test('dragging uses contiguous order slots starting at 1', () => {
+  const svg = {
+    getBoundingClientRect: () => ({ left: 0, width: 860 }),
+    viewBox: { baseVal: { width: 860 } }
+  };
+
+  assert.equal(sequenceFromPointer(svg, { clientX: 320 }), 1);
+  assert.equal(sequenceFromPointer(svg, { clientX: 470 }), 2);
+});
+
+test('sequence targeting follows widened slot geometry', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = setSegmentBoundary(document, { signalId: document.semantic.signals[0].id, sequence: 1, rightState: 'LOW' });
+  document.presentation.slotWidthUnits.tm_start = 2;
+  const widenedSvg = {
+    getBoundingClientRect: () => ({ left: 0, width: 860 }),
+    viewBox: { baseVal: { width: 860 } }
+  };
+
+  assert.equal(sequenceFromPointer(widenedSvg, { clientX: 470 }, document), 1);
+  assert.equal(sequenceFromPointer(widenedSvg, { clientX: 620 }, document), 2);
+});
+
+test('transition targeting uses the displayed timeline origin after horizontal scrolling', () => {
+  const document = waveformWithTiming();
+  const markup = renderEditorMarkup(document, { mode: 'editor', validation: { valid: true, errors: [] } });
+  const svg = {
+    dataset: renderedDatasetFromAttributes(renderedAttributes(markup.match(/<svg\b[^>]*>/)[0])),
+    getBoundingClientRect: () => ({ left: -120, width: 690 }),
+    viewBox: { baseVal: { width: 690 } }
+  };
+  assert.equal(sequenceFromPointer(svg, { clientX: 30 }, document), 1);
+  assert.equal(sequenceFromPointer(svg, { clientX: 180 }, document), 2);
+});
+
+test('editor refresh preserves horizontal scroll after an edit', () => {
+  const root = fakeEditorRoot(historyPayload(waveformWithTiming()));
+  let canvas = { scrollLeft: 0 };
+  Object.defineProperty(root.elements['#editor'], 'innerHTML', {
+    set() { canvas = { scrollLeft: 0 }; }
+  });
+  root.elements['#editor'].querySelector = (selector) => selector === '#waveform-canvas' ? canvas : null;
+  const editor = createEditor(root);
+  canvas.scrollLeft = 240;
+  editor.render();
+  assert.equal(canvas.scrollLeft, 240);
+});
+
+test('PNG export renders the full document including signal labels independently of the viewport', async (t) => {
+  const root = fakeEditorRoot(historyPayload(waveformWithTiming()));
+  createEditor(root);
+  const blobs = [];
+  t.mock.method(URL, 'createObjectURL', (blob) => { blobs.push(blob); return 'blob:test'; });
+  t.mock.method(URL, 'revokeObjectURL', () => {});
+  const previousImage = globalThis.Image;
+  const previousDocument = globalThis.document;
+  const previousSerializer = globalThis.XMLSerializer;
+  t.after(() => { globalThis.Image = previousImage; globalThis.document = previousDocument; globalThis.XMLSerializer = previousSerializer; });
+  const viewportSvg = { getAttribute: () => '690' };
+  root.elements['#editor'].querySelector = (selector) => selector === 'svg' ? viewportSvg : null;
+  globalThis.XMLSerializer = class {
+    serializeToString(element) {
+      assert.equal(element, viewportSvg);
+      return '<svg width="690" height="300"><path /></svg>';
+    }
+  };
+  globalThis.Image = class {
+    width = 860;
+    height = 300;
+    set src(value) { queueMicrotask(() => this.onload()); }
+  };
+  globalThis.document = {
+    createElement: (tag) => tag === 'canvas'
+      ? { getContext: () => ({ drawImage() {} }), toBlob: (callback) => callback(new Blob(['png'], { type: 'image/png' })) }
+      : { click() {} }
+  };
+  await root.elements['#export-png'].dispatch('click');
+  assert.equal(blobs.length, 2, 'exports both SVG input and PNG download');
+  const svg = await blobs[0].text();
+  assert.match(svg, /class="signal-label"[^>]*>WE#<\/text>/);
+  assert.match(svg, /data-transition-id="[^"]*" cx="320"/);
+  assert.match(svg, /tWP/);
+});
+
+test('vertical timing drag maps the pointer into the signal overlay interval', () => {
+  const svg = {
+    dataset: { timingTopY: '64', timingBottomY: '144' },
+    getBoundingClientRect: () => ({ top: 100, height: 500 }),
+    viewBox: { baseVal: { height: 300 } }
+  };
+
+  assert.equal(timingPositionFromPointer(svg, { clientY: 100 }), 0);
+  assert.ok(Math.abs(timingPositionFromPointer(svg, { clientY: 100 + (104 / 300) * 500 }) - 0.5) < 1e-12);
+  assert.equal(timingPositionFromPointer(svg, { clientY: 600 }), 1);
+});
+
+test('timing drag preserves the pointer grab offset', () => {
+  const svg = {
+    dataset: { timingTopY: '64', timingBottomY: '144' },
+    getBoundingClientRect: () => ({ top: 100, height: 400 }),
+    viewBox: { baseVal: { height: 320 } }
+  };
+  const pointerY = pointerSvgY(svg, { clientY: 250 });
+  const grabOffsetY = pointerY - 84;
+
+  assert.equal(timingPositionFromPointer(svg, { clientY: 300 }, { grabOffsetY }), 0.75);
+});
+
+test('relation endpoint drags preserve timing arrays and phase singleton fields', () => {
+  assert.deepEqual(relationEndpointUpdates('timing', 'start', 'tr_timing'), { startTransitionIds: ['tr_timing'] });
+  assert.deepEqual(relationEndpointUpdates('timing', 'end', 'tr_timing'), { endTransitionIds: ['tr_timing'] });
+  assert.deepEqual(relationEndpointUpdates('phase', 'start', 'tr_phase'), { startTransitionId: 'tr_phase' });
+  assert.deepEqual(relationEndpointUpdates('phase', 'end', 'tr_phase'), { endTransitionId: 'tr_phase' });
+});
+
+test('timing endpoint drops preserve a same-slot selected transition subset', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const [we, ce] = document.semantic.signals;
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: ce.id, sequence: 10, rightState: 'LOW' });
+  document = setSegmentBoundary(document, { signalId: we.id, sequence: 30, rightState: 'HIGH' });
+  const startTransitions = document.semantic.transitions.filter((transition) => document.semantic.timeline.timeMarkers.find((marker) => marker.id === transition.markerId)?.sequence === 10);
+  const endTransition = document.semantic.transitions.find((transition) => document.semantic.timeline.timeMarkers.find((marker) => marker.id === transition.markerId)?.sequence === 30);
+  document = addTimingParameter(document, {
+    name: 'tSYNC',
+    startTransitionIds: startTransitions.map((transition) => transition.id),
+    endTransitionIds: [endTransition.id]
+  });
+
+  const updated = applyRelationEndpointDrop(document, {
+    relationKind: 'timing',
+    relationId: document.semantic.timingParameters[0].id,
+    endpoint: 'start',
+    transitionId: startTransitions[1].id
+  });
+
+  assert.deepEqual(updated.semantic.timingParameters[0].startTransitionIds, startTransitions.map((transition) => transition.id));
+});
+
+test('timing endpoint editors render their selected same-slot transition subset as checkboxes', () => {
+  const withWe = addSignal(createDocument({ title: 'Program' }), {
+    name: 'WE#', type: 'control', initialState: 'HIGH'
+  });
+  const withSignals = addSignal(withWe, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const [weId, ceId] = withSignals.semantic.signals.map((signal) => signal.id);
+  const withWeStart = setSegmentBoundary(withSignals, { signalId: weId, sequence: 10, rightState: 'LOW' });
+  const withStarts = setSegmentBoundary(withWeStart, { signalId: ceId, sequence: 10, rightState: 'LOW' });
+  const withEnd = setSegmentBoundary(withStarts, { signalId: weId, sequence: 30, rightState: 'HIGH' });
+  const startTransitions = withEnd.semantic.transitions.filter((transition) => {
+    const marker = withEnd.semantic.timeline.timeMarkers.find((item) => item.id === transition.markerId);
+    return marker?.sequence === 10;
+  });
+  const end = withEnd.semantic.transitions.find((transition) => {
+    const marker = withEnd.semantic.timeline.timeMarkers.find((item) => item.id === transition.markerId);
+    return marker?.sequence === 30;
+  });
+  const document = addTimingParameter(withEnd, {
+    name: 'tWP',
+    startTransitionIds: startTransitions.map((transition) => transition.id),
+    endTransitionIds: [end.id]
+  });
+
+  const markup = renderInspectorMarkup(document);
+  const startGroup = markup.match(/<fieldset data-endpoint-group="start"[\s\S]*?<\/fieldset>/)?.[0] ?? '';
+  const parameter = document.semantic.timingParameters[0];
+
+  assert.match(markup, /data-endpoint-group="start"[\s\S]*Order slot #10/);
+  assert.equal((startGroup.match(/name="startTransitionIds"[^>]*checked/g) ?? []).length, 2);
+  assert.doesNotMatch(startGroup, /data-slot="30"/);
+  assert.doesNotMatch(startGroup, /name="startTransitionIds"[^>]*required/);
+  assert.match(startGroup, /WE# · HIGH→LOW/);
+  assert.match(startGroup, /CE# · HIGH→LOW/);
+  assert.match(startGroup, new RegExp(`aria-describedby="timing-endpoint-error-${parameter.id}-start"`));
+  assert.match(startGroup, new RegExp(`<p class="field-error" id="timing-endpoint-error-${parameter.id}-start" role="alert"[^>]*data-endpoint-notice[^>]*hidden>`));
+});
+
+test('timing endpoint form values retain every selected checkbox value', () => {
+  const formData = { getAll: (name) => name === 'startTransitionIds' ? ['tr_a', 'tr_b'] : [] };
+
+  assert.deepEqual(timingEndpointIdsFromForm(formData, 'start'), ['tr_a', 'tr_b']);
+});
+
+test('timing endpoint submission accepts a non-first selected checkbox', () => {
+  const formData = {
+    getAll: (name) => name === 'startTransitionIds' ? ['tr_second'] : name === 'endTransitionIds' ? ['tr_end'] : []
+  };
+
+  assert.deepEqual(timingEndpointSubmission(formData), {
+    shouldUpdate: true,
+    startTransitionIds: ['tr_second'],
+    endTransitionIds: ['tr_end'],
+    errors: { start: '', end: '' }
+  });
+});
+
+test('timing endpoint submission blocks document updates when an endpoint group is empty', () => {
+  const formData = {
+    getAll: (name) => name === 'startTransitionIds' ? [] : name === 'endTransitionIds' ? ['tr_end'] : []
+  };
+
+  assert.deepEqual(timingEndpointSubmission(formData), {
+    shouldUpdate: false,
+    startTransitionIds: [],
+    endTransitionIds: ['tr_end'],
+    errors: { start: 'Select at least one start transition.', end: '' }
+  });
+});
+
+test('the inspector exposes every field used to create waveform objects', () => {
+  const withSignal = addSignal(createDocument({ title: 'Program' }), {
+    name: 'WE#', type: 'control', initialState: 'HIGH', subtype: 'write-enable', tags: ['active-low']
+  });
+  const signalId = withSignal.semantic.signals[0].id;
+  const withStart = setSegmentBoundary(withSignal, { signalId, sequence: 1, rightState: 'LOW' });
+  const withEnd = setSegmentBoundary(withStart, { signalId, sequence: 2, rightState: 'HIGH' });
+  const [start, end] = withEnd.semantic.transitions;
+  const withTiming = addTimingParameter(withEnd, {
+    name: 'tWP', startTransitionIds: [start.id], endTransitionIds: [end.id], requirementText: '>= 20 ns'
+  });
+  const withPhase = addPhase(withTiming, { name: 'Program', startTransitionId: start.id, endTransitionId: end.id, tags: ['write'] });
+  const document = addAnnotation(withPhase, { text: 'active pulse', anchorType: 'signal', anchorId: signalId });
+
+  const markup = renderInspectorMarkup(document, start.id);
+
+  assert.match(markup, /name="initialState"/);
+  assert.match(markup, /data-form="transition-edit"[\s\S]*name="signalId"/);
+  assert.match(markup, /data-form="timing-edit"[\s\S]*name="requirementText"/);
+  assert.doesNotMatch(markup, /name="requirementText"[^>]*required/);
+  assert.match(markup, /Requirement note \(optional\)/);
+  assert.doesNotMatch(markup, /Rule engine format|Rule status/);
+  assert.match(markup, /data-form="phase-edit"[\s\S]*name="tags"/);
+  assert.match(markup, /data-form="annotation-edit"[\s\S]*name="anchor"[\s\S]*name="text"/);
+});
+
+test('signal move controls follow the current presentation order', () => {
+  const first = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  const second = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  const weId = second.semantic.signals[0].id;
+  const ceId = second.semantic.signals[1].id;
+  const moved = moveSignalRow(second, { signalId: weId, targetIndex: 1 });
+
+  const markup = renderInspectorMarkup(moved);
+  const editors = [...markup.matchAll(/<details class="relation-editor signal-editor"[^>]*>[\s\S]*?<\/details>/g)].map((match) => match[0]);
+  const ceEditor = editors.find((editor) => editor.includes(`value="${ceId}"`)) ?? '';
+  const weEditor = editors.find((editor) => editor.includes(`value="${weId}"`)) ?? '';
+
+  assert.ok(markup.indexOf(`value="${ceId}"`) < markup.indexOf(`value="${weId}"`));
+  assert.match(ceEditor, /data-signal-move="-1"[^>]*disabled/);
+  assert.doesNotMatch(ceEditor, /data-signal-move="1"[^>]*disabled/);
+  assert.doesNotMatch(weEditor, /data-signal-move="-1"[^>]*disabled/);
+  assert.match(weEditor, /data-signal-move="1"[^>]*disabled/);
+});
+
+test('createEditor keeps the moved signal open for consecutive row moves', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'OE#', type: 'control', initialState: 'HIGH' });
+  const [weId, ceId, oeId] = document.presentation.signalRowOrder;
+  const root = fakeEditorRoot(historyPayload(document));
+  const app = createEditor(root);
+  const inspector = root.elements['#inspector'];
+  inspector.querySelectorAll = (selector) => selector === 'details.signal-editor[open][data-signal-editor-id]'
+    ? [{ dataset: { signalEditorId: weId } }]
+    : [];
+  const move = (direction) => inspector.dispatch('click', {
+    target: { id: '', dataset: { signalMove: String(direction), signalId: weId } }
+  });
+
+  move(1);
+  move(1);
+
+  assert.deepEqual(app.getState().document.presentation.signalRowOrder, [ceId, oeId, weId]);
+  const movedEditor = inspector.innerHTML.match(new RegExp(`<details class="relation-editor signal-editor"[^>]*data-signal-editor-id="${weId}"[^>]*open[\\s\\S]*?<\\/details>`))?.[0] ?? '';
+  assert.notEqual(movedEditor, '');
+  assert.doesNotMatch(movedEditor, /data-signal-move="-1"[^>]*disabled/);
+  assert.match(movedEditor, /data-signal-move="1"[^>]*disabled/);
+});
+
+test('each signal editor is independently collapsed by default', () => {
+  const first = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  const document = addSignal(first, { name: 'CE#', type: 'control', initialState: 'HIGH' });
+
+  const markup = renderInspectorMarkup(document);
+
+  assert.equal((markup.match(/<details class="relation-editor signal-editor" data-signal-editor-id="[^"]+">/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /data-signal-editor-id="[^"]+" open/);
+  assert.match(markup, /<summary>WE# · signal<\/summary>/);
+  assert.match(markup, /<summary>CE# · signal<\/summary>/);
+  assert.equal((markup.match(/data-form="signal-edit"/g) ?? []).length, 2);
+});
+
+test('document metadata editor is collapsed by default while retaining its form', () => {
+  const markup = renderInspectorMarkup(createDocument({ title: 'Program' }));
+  const metadataEditor = markup.match(/<details class="metadata-editor">[\s\S]*?<\/details>/)?.[0] ?? '';
+
+  assert.notEqual(metadataEditor, '');
+  assert.doesNotMatch(metadataEditor, /<details class="metadata-editor" open/);
+  assert.match(metadataEditor, /<summary>Document metadata<\/summary>/);
+  assert.match(metadataEditor, /<form class="tool-form" data-form="metadata">/);
+  assert.match(metadataEditor, /name="title" value="Program" required/);
+  assert.match(metadataEditor, />Save metadata<\/button>/);
+});
+
+test('history and every authoring tool are independently collapsed by default', () => {
+  const document = createDocument({ title: 'Program' });
+  const history = {
+    activeId: 'doc-1',
+    entries: [{ id: 'doc-1', title: 'Program', updatedAt: 100, snapshot: document }]
+  };
+
+  const markup = renderPaletteMarkup({ documentModel: document, history, activeHistoryId: 'doc-1' });
+
+  assert.match(markup, /<details class="history-disclosure">/);
+  assert.doesNotMatch(markup, /<details class="history-disclosure" open/);
+  assert.equal((markup.match(/<details class="tool-disclosure">/g) ?? []).length, 5);
+  assert.doesNotMatch(markup, /<details class="tool-disclosure" open/);
+  assert.match(markup, /data-history-id="doc-1"/);
+  assert.match(markup, /data-delete-history-id="doc-1"/);
+});
+
+test('a valid document can switch between waveform and formatted current JSON', () => {
+  const document = createDocument({ title: 'Program' });
+  const validation = { valid: true, errors: [], warnings: [] };
+
+  const waveform = renderEditorMarkup(document, { mode: 'editor', validation, view: 'waveform' });
+  const json = renderEditorMarkup(document, { mode: 'editor', validation, view: 'json' });
+
+  assert.match(waveform, /data-editor-view="waveform"/);
+  assert.match(waveform, /id="waveform-canvas"/);
+  assert.match(json, /data-editor-view="json"/);
+  assert.match(json, /id="document-json-view"/);
+  assert.match(json, /&quot;title&quot;: &quot;Program&quot;/);
+  assert.doesNotMatch(json, /id="waveform-canvas"/);
+});
+
+test('waveform rendering reserves a stable drag feedback slot above the canvas', () => {
+  const document = createDocument({ title: 'Program' });
+  const validation = { valid: true, errors: [], warnings: [] };
+
+  const markup = renderEditorMarkup(document, { mode: 'editor', validation, view: 'waveform' });
+  const feedbackSlot = markup.match(/<div class="drag-status-slot">[\s\S]*?<\/div>/)?.[0] ?? '';
+
+  assert.match(feedbackSlot, /<p id="drag-status" class="drag-status" aria-live="polite" hidden><\/p>/);
+  assert.ok(markup.indexOf('class="drag-status-slot"') < markup.indexOf('id="waveform-canvas"'));
+});
+
+test('waveform editor keeps signal labels in a fixed rail beside the scrollable timeline', () => {
+  let document = addSignal(createDocument({ title: 'Program' }), { name: 'WE#', type: 'control', initialState: 'HIGH' });
+  document = addSignal(document, { name: 'CE#', type: 'control', initialState: 'LOW' });
+  document.presentation.signalRowOrder = [document.semantic.signals[1].id, document.semantic.signals[0].id];
+
+  const markup = renderEditorMarkup(document, { mode: 'editor', validation: { valid: true, errors: [], warnings: [] } });
+
+  assert.match(markup, /<div class="waveform-shell">/);
+  assert.match(markup, new RegExp(`<aside id="signal-label-rail"[^>]*>[\\s\\S]*?data-signal-label-id="${document.semantic.signals[1].id}"[\\s\\S]*?CE#[\\s\\S]*?data-signal-label-id="${document.semantic.signals[0].id}"[\\s\\S]*?WE#[\\s\\S]*?<\\/aside>`));
+  assert.ok(markup.indexOf('id="signal-label-rail"') < markup.indexOf('id="waveform-canvas"'));
+});
+
+test('invalid and repair modes never expose the JSON projection switch', () => {
+  const document = createDocument({ title: 'Program' });
+  const invalid = renderEditorMarkup(document, { mode: 'editor', validation: { valid: false, errors: ['Broken'], warnings: [] }, view: 'json' });
+  const repair = renderEditorMarkup(document, { mode: 'repair', validation: { valid: false, errors: ['Broken'], warnings: [] }, view: 'waveform', repairText: '{}' });
+
+  assert.doesNotMatch(invalid, /data-editor-view=/);
+  assert.match(invalid, /id="waveform-canvas"/);
+  assert.doesNotMatch(repair, /data-editor-view=|id="waveform-canvas"/);
+  assert.match(repair, /id="repair-json"/);
+});
+
+function renderedAttributes(markup) {
+  return Object.fromEntries([...markup.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, name, value]) => [name, value]));
+}
+
+function renderedDatasetFromAttributes(attributes) {
+  return Object.fromEntries(Object.entries(attributes)
+    .filter(([name]) => name.startsWith('data-'))
+    .map(([name, value]) => [name.slice(5).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase()), value]));
+}
+
+test('timing drag surfaces must resolve to distinct rendered descendants', () => {
+  const renderedSvg = renderSvg(waveformWithTiming())
+    .replace('class="relation-drag-target"', 'class="relation-drag-target relation-arrow"')
+    .replace('class="relation-arrow"', 'class="relation-arrow-red-proof"');
+
+  assert.throws(
+    () => renderedTimingContract({ renderedSvg }),
+    /renderer must provide distinct timing drag surfaces/
+  );
+});
+
+test('timing drag surface matching ignores data-class attributes', () => {
+  const renderedSvg = renderSvg(waveformWithTiming())
+    .replace('class="relation-arrow"', 'class="relation-arrow-red-proof" data-class="relation-arrow"');
+
+  assert.throws(
+    () => renderedTimingContract({ renderedSvg }),
+    /renderer must provide exactly one timing .relation-arrow/
+  );
+});
+
+test('timing drag contract rejects missing or renamed timing-group kind hooks before dispatch', () => {
+  const renderedSvg = renderSvg(waveformWithTiming());
+  const malformedGroups = [
+    renderedSvg.replace(' data-relation-kind="timing"', ''),
+    renderedSvg.replace('data-relation-kind="timing"', 'data-shadow-data-relation-kind="timing"')
+  ];
+
+  for (const malformedSvg of malformedGroups) {
+    assert.throws(
+      () => renderedTimingContract({ renderedSvg: malformedSvg }),
+      /renderer must provide exactly one timing relation group/
+    );
+  }
+});
+
+function isRenderedTimingGroup(attributes) {
+  return attributes['data-relation-kind'] === 'timing'
+    && Object.prototype.hasOwnProperty.call(attributes, 'data-relation-id');
+}
+
+function renderedNode(candidate, timingGroup) {
+  const { attributes, tagName } = candidate;
+  const node = {
+    className: attributes.class ?? '',
+    dataset: renderedDatasetFromAttributes(attributes),
+    tagName,
+    closest(selector) {
+      if (selector === '[data-relation-endpoint]' && node.dataset.relationEndpoint) return node;
+      if (selector === '[data-relation-kind="timing"][data-relation-id]'
+        && isRenderedTimingGroup(timingGroup.renderedAttributes)) return timingGroup;
+      return null;
+    }
+  };
+  return node;
+}
+
+function renderedTimingDescendants(markup) {
+  return [...markup.matchAll(/<(?:line|circle)\b[^>]*\/>|<text\b[^>]*>[^<]*<\/text>/g)]
+    .map((match, index) => ({
+      attributes: renderedAttributes(match[0]),
+      index,
+      markup: match[0],
+      tagName: /^<(\w+)/.exec(match[0])?.[1].toUpperCase() ?? ''
+    }));
+}
+
+function hasRenderedClass(candidate, token) {
+  return (candidate.attributes.class ?? '').split(/\s+/).includes(token);
+}
+
+function exactlyOneCandidate(candidates, selector, predicate) {
+  const matches = candidates.filter(predicate);
+  assert.equal(matches.length, 1, `renderer must provide exactly one timing ${selector}`);
+  return matches[0];
+}
+
+function renderedTimingContract({ renderedSvg } = {}) {
+  const document = waveformWithTiming();
+  const groups = [...(renderedSvg ?? renderSvg(document)).matchAll(/<g\b([^>]*)>([\s\S]*?)<\/g>/g)]
+    .map((match) => ({
+      attributes: renderedAttributes(match[0].match(/^<g\b[^>]*>/)?.[0] ?? ''),
+      contents: match[2]
+    }))
+    .filter((group) => isRenderedTimingGroup(group.attributes));
+  assert.equal(groups.length, 1, 'renderer must provide exactly one timing relation group');
+
+  const { attributes: groupAttributes, contents: groupContents } = groups[0];
+  const descendants = renderedTimingDescendants(groupContents);
+  const timingGroup = {
+    classList: classList(),
+    dataset: renderedDatasetFromAttributes(groupAttributes),
+    removeAttribute(name) { this.attributes.delete(name); },
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    attributes: new Map(),
+    renderedAttributes: groupAttributes
+  };
+  const surfaceCandidates = [
+    ['wide transparent line (.relation-drag-target)', '.relation-drag-target', (candidate) => hasRenderedClass(candidate, 'relation-drag-target')],
+    ['visible arrow (.relation-arrow)', '.relation-arrow', (candidate) => hasRenderedClass(candidate, 'relation-arrow')],
+    ['label (timing-group <text>)', '<text>', (candidate) => candidate.tagName === 'TEXT']
+  ];
+  const surfaces = surfaceCandidates.map(([name, selector, predicate]) => ({
+    name,
+    candidate: exactlyOneCandidate(descendants, selector, predicate)
+  }));
+  assert.equal(new Set(surfaces.map((surface) => surface.candidate.index)).size, surfaces.length, 'renderer must provide distinct timing drag surfaces');
+
+  return {
+    document,
+    parameterId: timingGroup.dataset.relationId,
+    startEndpoint: renderedNode(exactlyOneCandidate(descendants, 'start .relation-endpoint', (candidate) => hasRenderedClass(candidate, 'relation-endpoint') && candidate.attributes['data-relation-endpoint'] === 'start'), timingGroup),
+    surfaces: surfaces.map(({ name, candidate }) => ({ name, node: renderedNode(candidate, timingGroup) })),
+    timingGroup
+  };
+}
+
+function timingDragHarness(contract, surface) {
+  const { document, parameterId, timingGroup: group } = contract;
+  const attributes = new Map();
+  group.attributes = attributes;
+  const anchoredNodes = [
+    { className: 'timing-connector start', tagName: 'LINE', values: new Map([['y1', '80'], ['y2', '104']]) },
+    { className: 'timing-connection-mark start', tagName: 'CIRCLE', values: new Map([['cy', '104']]) }
+  ].map((node) => ({
+    ...node,
+    classList: { contains: (name) => node.className.split(/\s+/).includes(name) },
+    getAttribute: (name) => node.values.get(name) ?? null,
+    setAttribute: (name, value) => node.values.set(name, String(value))
+  }));
+  group.querySelectorAll = (selector) => selector === '.timing-connector, .timing-connection-mark' ? anchoredNodes : [];
+  const svg = eventNode();
+  svg.dataset = { timingTopY: '64', timingBottomY: '144' };
+  svg.viewBox = { baseVal: { width: 860, height: 300 } };
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 860, height: 300 });
+  svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+  svg.querySelector = (selector) => selector === `[data-relation-kind="timing"][data-relation-id="${parameterId}"]` ? group : null;
+  svg.querySelectorAll = () => [];
+  const status = eventNode();
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : null;
+  const state = { document, drag: null, relationCreation: null, selectedTransitionId: null };
+  const notices = [];
+  let renderCount = 0;
+  bindCanvasPointerEvents(svg, {
+    root: { elementFromPoint: () => null },
+    editor,
+    getState: () => state,
+    applyOperation(operation) {
+      state.document = operation(state.document);
+      renderCount += 1;
+    },
+    setNotice: (notice) => notices.push(notice),
+    render() {
+      renderCount += 1;
+      group.removeAttribute('transform');
+    },
+    showDragFeedback: () => {},
+    clearDragFeedback: () => {},
+    dragMessage: (_drag, position) => `position:${position}`
+  });
+  const pointer = (clientY) => ({
+    target: surface,
+    pointerId: 7,
+    clientX: 320,
+    clientY,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return { anchoredNodes, attributes, group, notices, parameterId, pointer, renderCount: () => renderCount, state, surface, svg };
+}
+
+function phaseDragHarness() {
+  const document = waveformWithPhase();
+  const phaseId = document.semantic.phases[0].id;
+  const attributes = new Map();
+  const phaseConnectors = [
+    { className: 'phase-connector start', values: new Map([['y1', '80'], ['y2', '104']]) },
+    { className: 'phase-connection-mark start', values: new Map([['cy', '104']]) }
+  ].map((node) => ({
+    ...node,
+    classList: { contains: (name) => node.className.split(/\s+/).includes(name) },
+    getAttribute: (name) => node.values.get(name) ?? null,
+    setAttribute: (name, value) => node.values.set(name, String(value))
+  }));
+  const group = {
+    classList: classList(),
+    dataset: { relationId: phaseId, relationKind: 'phase', relationY: '80', phasePosition: '0.2' },
+    attributes,
+    querySelectorAll: () => phaseConnectors,
+    removeAttribute(name) { attributes.delete(name); },
+    setAttribute(name, value) { attributes.set(name, value); }
+  };
+  const surface = {
+    closest(selector) {
+      if (selector === '[data-relation-kind="phase"][data-relation-id]') return group;
+      return null;
+    }
+  };
+  const svg = eventNode();
+  svg.dataset = { timingTopY: '64', timingBottomY: '144' };
+  svg.viewBox = { baseVal: { width: 860, height: 300 } };
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 860, height: 300 });
+  svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+  svg.querySelector = (selector) => selector === `[data-relation-kind="phase"][data-relation-id="${phaseId}"]` ? group : null;
+  const status = eventNode();
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : null;
+  const state = { document, drag: null, relationCreation: null, selectedTransitionId: null };
+  let renderCount = 0;
+  bindCanvasPointerEvents(svg, {
+    root: { elementFromPoint: () => null },
+    editor,
+    getState: () => state,
+    applyOperation(operation) {
+      state.document = operation(state.document);
+      renderCount += 1;
+    },
+    setNotice: () => {},
+    render() {
+      renderCount += 1;
+      group.removeAttribute('transform');
+    },
+    showDragFeedback: () => {},
+    clearDragFeedback: () => {},
+    dragMessage: (_drag, position) => `position:${position}`
+  });
+  const pointer = (clientY) => ({
+    target: surface,
+    pointerId: 7,
+    clientX: 320,
+    clientY,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return { attributes, group, phaseConnectors, phaseId, pointer, renderCount: () => renderCount, state, svg };
+}
+
+test('timing drag preview keeps connector transition anchors fixed while the arrow moves', () => {
+  const contract = renderedTimingContract();
+  const harness = timingDragHarness(contract, contract.surfaces[0].node);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(80));
+  harness.svg.dispatch('pointermove', harness.pointer(100));
+  harness.svg.dispatch('pointermove', harness.pointer(124));
+
+  const connector = harness.anchoredNodes.find((node) => node.classList.contains('timing-connector'));
+  const mark = harness.anchoredNodes.find((node) => node.classList.contains('timing-connection-mark'));
+  const translatedBy = 44;
+  assert.equal(Number(connector.getAttribute('y1')) + translatedBy, 124, 'connector arrow end follows the preview');
+  assert.equal(Number(connector.getAttribute('y2')) + translatedBy, 104, 'connector transition end stays anchored');
+  assert.equal(Number(mark.getAttribute('cy')) + translatedBy, 104, 'transition mark stays anchored');
+});
+
+test('phase drag preview keeps endpoint connectors fixed and commits only on release', () => {
+  const harness = phaseDragHarness();
+  const before = structuredClone(harness.state.document);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(80));
+  harness.svg.dispatch('pointermove', harness.pointer(124));
+
+  const connector = harness.phaseConnectors.find((node) => node.classList.contains('phase-connector'));
+  const mark = harness.phaseConnectors.find((node) => node.classList.contains('phase-connection-mark'));
+  assert.equal(harness.state.drag?.kind, 'phase-position');
+  assert.equal(harness.attributes.get('transform'), 'translate(0 44)');
+  assert.equal(Number(connector.getAttribute('y1')) + 44, 124, 'phase arrow end follows the preview');
+  assert.equal(Number(connector.getAttribute('y2')) + 44, 104, 'phase transition end stays anchored');
+  assert.equal(Number(mark.getAttribute('cy')) + 44, 104, 'phase transition mark stays anchored');
+  assert.deepEqual(harness.state.document, before);
+
+  harness.svg.dispatch('pointerup', harness.pointer(140));
+
+  assert.equal(harness.state.drag, null);
+  assert.equal(harness.state.document.presentation.phasePositions[harness.phaseId], 0.75);
+  assert.equal(harness.renderCount(), 1);
+});
+
+test('createEditor timing drag lifecycle commits the final preview from each rendered timing surface', () => {
+  const contract = renderedTimingContract();
+
+  for (const surface of contract.surfaces) {
+    const harness = timingDragHarness(contract, surface.node);
+
+    harness.svg.dispatch('pointerdown', harness.pointer(80));
+    const documentBeforeMove = structuredClone(harness.state.document);
+    harness.svg.dispatch('pointermove', harness.pointer(124));
+
+    assert.equal(harness.state.drag.kind, 'timing-position');
+    assert.equal(harness.svg.capturedPointerId, 7);
+    assert.equal(harness.attributes.get('transform'), 'translate(0 44)');
+    assert.deepEqual(harness.state.document, documentBeforeMove);
+
+    harness.svg.dispatch('pointerup', harness.pointer(140));
+
+    assert.equal(harness.state.drag, null);
+    assert.equal(harness.state.document.presentation.timingParameterPositions[harness.parameterId], 0.75);
+    assert.equal(harness.renderCount(), 1);
+  }
+});
+
+test('createEditor timing drag cancellation restores the render without mutating position', () => {
+  const contract = renderedTimingContract();
+  const harness = timingDragHarness(contract, contract.surfaces.find((surface) => surface.name.startsWith('label'))?.node);
+  const before = structuredClone(harness.state.document);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(80));
+  harness.svg.dispatch('pointermove', harness.pointer(124));
+  harness.svg.dispatch('pointercancel', harness.pointer(124));
+
+  assert.deepEqual(harness.state.document, before);
+  assert.equal(harness.state.drag, null);
+  assert.equal(harness.attributes.has('transform'), false);
+  assert.deepEqual(harness.notices, ['Drag cancelled.']);
+  assert.equal(harness.renderCount(), 1);
+});
+
+test('relation endpoints retain pointerdown priority over their timing group', () => {
+  const contract = renderedTimingContract();
+  const harness = timingDragHarness(contract, contract.startEndpoint);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(80));
+
+  assert.deepEqual(harness.state.drag, {
+    kind: 'relation-endpoint', relationId: harness.parameterId, relationKind: 'timing', endpoint: 'start'
+  });
+});
+
+function canvasPanHarness({ interactive = false } = {}) {
+  const state = { document: createDocument({ title: 'Program' }), drag: null, relationCreation: null, selectedTransitionId: null };
+  const status = eventNode();
+  const canvas = eventNode();
+  canvas.scrollLeft = 180;
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : selector === '#waveform-canvas' ? canvas : null;
+  const panSurface = eventNode();
+  const transition = { dataset: { transitionId: 'tr_existing' } };
+  panSurface.closest = (selector) => {
+    if (interactive && selector === '[data-transition-id]') return transition;
+    return selector === '[data-canvas-pan-surface]' ? panSurface : null;
+  };
+  const svg = eventNode();
+  svg.dataset = {};
+  svg.viewBox = { baseVal: { width: 690, height: 300 } };
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 690, height: 300 });
+  svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+  let operationCount = 0;
+  let renderCount = 0;
+  bindCanvasPointerEvents(svg, {
+    root: { body: eventNode(), elementFromPoint: () => null },
+    editor,
+    getState: () => state,
+    applyOperation() { operationCount += 1; },
+    setNotice() {},
+    render() { renderCount += 1; },
+    previewCanvas() {},
+    showDragFeedback() {},
+    clearDragFeedback() {},
+    dragMessage: (drag) => drag.kind
+  });
+  const pointer = (clientX) => ({
+    target: panSurface,
+    pointerId: 13,
+    clientX,
+    clientY: 180,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return { canvas, operationCount: () => operationCount, pointer, renderCount: () => renderCount, state, svg };
+}
+
+test('dragging a passive waveform surface pans horizontally without changing the document', () => {
+  const harness = canvasPanHarness();
+  const before = structuredClone(harness.state.document);
+
+  harness.svg.dispatch('pointerdown', harness.pointer(400));
+  harness.svg.dispatch('pointermove', harness.pointer(280));
+
+  assert.equal(harness.state.drag?.kind, 'canvas-pan');
+  assert.equal(harness.canvas.scrollLeft, 300);
+  assert.equal(harness.operationCount(), 0);
+  assert.deepEqual(harness.state.document, before);
+
+  harness.svg.dispatch('pointerup', harness.pointer(280));
+
+  assert.equal(harness.state.drag, null);
+  assert.equal(harness.operationCount(), 0);
+  assert.equal(harness.renderCount(), 0);
+});
+
+test('an interactive waveform target retains pointerdown priority over canvas panning', () => {
+  const harness = canvasPanHarness({ interactive: true });
+
+  harness.svg.dispatch('pointerdown', harness.pointer(400));
+
+  assert.deepEqual(harness.state.drag, { kind: 'transition', id: 'tr_existing' });
+  assert.equal(harness.canvas.scrollLeft, 180);
+});
+
+function slotResizeHarness() {
+  const state = { document: createDocument({ title: 'Program' }), drag: null, relationCreation: null, selectedTransitionId: null };
+  const status = eventNode();
+  const editor = eventNode();
+  editor.querySelector = (selector) => selector === '#drag-status' ? status : null;
+  const resizeHandle = {
+    dataset: { slotResizeStartMarkerId: 'tm_start', slotStartX: '170', slotWidthUnits: '1' },
+    closest(selector) {
+      return selector === '[data-slot-resize-start-marker-id]' ? resizeHandle : null;
+    }
+  };
+  const previews = [];
+  const notices = [];
+  let applyCount = 0;
+  let feedbackCount = 0;
+  let renderCount = 0;
+  let currentSvg;
+
+  function makeSvg() {
+    const svg = eventNode();
+    svg.dataset = {};
+    svg.viewBox = { baseVal: { width: 860, height: 300 } };
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 860, height: 300 });
+    svg.setPointerCapture = (pointerId) => { svg.capturedPointerId = pointerId; };
+    svg.querySelector = () => null;
+    svg.querySelectorAll = () => [];
+    return svg;
+  }
+
+  function bind(svg) {
+    bindCanvasPointerEvents(svg, {
+      root: { elementFromPoint: () => null },
+      editor,
+      getState: () => state,
+      applyOperation(operation) {
+        applyCount += 1;
+        state.document = operation(state.document);
+      },
+      setNotice: (notice) => notices.push(notice),
+      render() { renderCount += 1; },
+      previewCanvas(slotWidthUnits, pointerId, drag) {
+        previews.push({ slotWidthUnits, pointerId, widthUnits: drag.widthUnits });
+        currentSvg = makeSvg();
+        bind(currentSvg);
+        currentSvg.setPointerCapture(pointerId);
+        feedbackCount += 1;
+      },
+      showDragFeedback: () => { feedbackCount += 1; },
+      clearDragFeedback: () => {},
+      dragMessage: () => 'resize'
+    });
+  }
+
+  currentSvg = makeSvg();
+  bind(currentSvg);
+  const pointer = (clientX) => ({
+    target: resizeHandle,
+    pointerId: 11,
+    clientX,
+    clientY: 26,
+    preventDefault() {},
+    stopPropagation() {}
+  });
+  return {
+    applyCount: () => applyCount,
+    currentSvg: () => currentSvg,
+    feedbackCount: () => feedbackCount,
+    notices,
+    pointer,
+    previews,
+    renderCount: () => renderCount,
+    state
+  };
+}
+
+test('slot resize pointer moves repaint the connected SVG before committing', () => {
+  const harness = slotResizeHarness();
+  const before = structuredClone(harness.state.document);
+
+  harness.currentSvg().dispatch('pointerdown', harness.pointer(320));
+  harness.currentSvg().dispatch('pointermove', harness.pointer(470));
+  harness.currentSvg().dispatch('pointermove', harness.pointer(620));
+
+  assert.equal(harness.state.drag.kind, 'slot-width');
+  assert.deepEqual(harness.previews, [
+    { slotWidthUnits: { tm_start: 2 }, pointerId: 11, widthUnits: 2 },
+    { slotWidthUnits: { tm_start: 3 }, pointerId: 11, widthUnits: 3 }
+  ]);
+  assert.equal(harness.applyCount(), 0);
+  assert.deepEqual(harness.state.document, before);
+  assert.equal(harness.currentSvg().capturedPointerId, 11);
+  assert.equal(harness.feedbackCount(), 3);
+});
+
+test('slot resize commits one presentation update on pointerup and cancels atomically', () => {
+  const commit = slotResizeHarness();
+
+  commit.currentSvg().dispatch('pointerdown', commit.pointer(320));
+  commit.currentSvg().dispatch('pointermove', commit.pointer(620));
+  commit.currentSvg().dispatch('pointerup', commit.pointer(620));
+
+  assert.equal(commit.applyCount(), 1);
+  assert.equal(commit.state.document.presentation.slotWidthUnits.tm_start, 3);
+  assert.equal(commit.state.drag, null);
+
+  const cancellation = slotResizeHarness();
+  const beforeCancellation = structuredClone(cancellation.state.document);
+
+  cancellation.currentSvg().dispatch('pointerdown', cancellation.pointer(320));
+  cancellation.currentSvg().dispatch('pointermove', cancellation.pointer(470));
+  cancellation.currentSvg().dispatch('pointercancel', cancellation.pointer(470));
+
+  assert.equal(cancellation.applyCount(), 0);
+  assert.deepEqual(cancellation.state.document, beforeCancellation);
+  assert.equal(cancellation.renderCount(), 1);
+  assert.deepEqual(cancellation.notices, ['Drag cancelled.']);
+});
+
+for (const [name, invalidDocument] of [
+  ['malformed known 1.0', { schemaVersion: '1.0', metadata: { title: 'Broken legacy' }, semantic: { timeline: {} }, presentation: {} }],
+  ['unknown-version', { ...waveformWithTiming(), schemaVersion: '2.0' }]
+]) {
+  test(`startup opens ${name} history in repair mode and preserves history access`, () => {
+    const root = fakeEditorRoot(historyPayload(invalidDocument));
+    let instance;
+
+    assert.doesNotThrow(() => { instance = createEditor(root); });
+
+    const state = instance.getState();
+    assert.equal(state.mode, 'repair');
+    assert.equal(state.validation.valid, false);
+    assert.equal(state.history.entries.length, 1);
+    assert.equal(state.history.activeId, 'active');
+    assert.match(state.repairText, /schemaVersion/);
+    assert.match(root.elements['#palette'].innerHTML, /data-history-id="active"/);
+    assert.doesNotMatch(root.elements['#editor'].innerHTML, /id="waveform-canvas"/);
+  });
+}
+
+for (const [name, invalidDocument] of [
+  ['malformed known 1.0', { schemaVersion: '1.0', metadata: { title: 'Broken legacy' }, semantic: { timeline: {} }, presentation: {} }],
+  ['unknown-version', { ...waveformWithTiming(), schemaVersion: '2.0' }]
+]) {
+  test(`history selection opens ${name} snapshot in repair mode and can switch back`, () => {
+    const valid = waveformWithTiming();
+    const root = fakeEditorRoot(historyPayload(valid, invalidDocument));
+    const instance = createEditor(root);
+    const clickHistory = (id) => root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-history-id]' ? { dataset: { historyId: id } } : null }
+    });
+
+    assert.doesNotThrow(() => clickHistory('other'));
+    assert.equal(instance.getState().mode, 'repair');
+    assert.equal(instance.getState().history.entries.length, 2);
+    assert.match(root.elements['#palette'].innerHTML, /data-history-id="active"/);
+
+    clickHistory('active');
+    assert.equal(instance.getState().mode, 'editor');
+    assert.equal(instance.getState().validation.valid, true);
+  });
+}
+
+test('deleting the active history item opens the newest remaining waveform', () => {
+  const oldest = createDocument({ title: 'Oldest' });
+  const newest = createDocument({ title: 'Newest' });
+  const active = createDocument({ title: 'Active' });
+  const root = fakeEditorRoot({
+    activeId: 'active',
+    entries: [
+      { id: 'oldest', title: oldest.metadata.title, updatedAt: 100, snapshot: oldest },
+      { id: 'newest', title: newest.metadata.title, updatedAt: 300, snapshot: newest },
+      { id: 'active', title: active.metadata.title, updatedAt: 200, snapshot: active }
+    ]
+  });
+  const originalWindow = globalThis.window;
+  globalThis.window = { confirm: () => true };
+  try {
+    const instance = createEditor(root);
+    root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-delete-history-id]' ? { dataset: { deleteHistoryId: 'active' } } : null }
+    });
+
+    assert.equal(instance.getState().history.activeId, 'newest');
+    assert.deepEqual(instance.getState().history.entries.map((entry) => entry.id), ['oldest', 'newest']);
+    assert.equal(instance.getState().document.metadata.title, 'Newest');
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('deleting the final history item replaces it with a new empty waveform', () => {
+  const root = fakeEditorRoot(historyPayload(createDocument({ title: 'Last waveform' })));
+  const originalWindow = globalThis.window;
+  globalThis.window = { confirm: () => true };
+  try {
+    const instance = createEditor(root);
+    root.elements['#palette'].dispatch('click', {
+      target: { closest: (selector) => selector === '[data-delete-history-id]' ? { dataset: { deleteHistoryId: 'active' } } : null }
+    });
+
+    const state = instance.getState();
+    assert.equal(state.history.entries.length, 1);
+    assert.notEqual(state.history.activeId, 'active');
+    assert.equal(state.document.metadata.title, 'Untitled waveform');
+    assert.equal(state.document.semantic.signals.length, 0);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('repair rendering keeps malformed collections inspectable across startup and history selection', () => {
+  const malformed = waveformWithTiming();
+  malformed.semantic.signals = {};
+  malformed.semantic.stateSegments = null;
+  malformed.semantic.transitions = 'broken';
+  malformed.semantic.timingParameters = {};
+  malformed.semantic.phases = 1;
+  malformed.semantic.annotations = false;
+
+  const startupRoot = fakeEditorRoot(historyPayload(malformed));
+  let startup;
+  assert.doesNotThrow(() => { startup = createEditor(startupRoot); });
+  assert.equal(startup.getState().mode, 'repair');
+  assert.match(startupRoot.elements['#palette'].innerHTML, /data-history-id="active"/);
+  assert.match(startupRoot.elements['#editor'].innerHTML, /&quot;signals&quot;: \{\}/);
+  assert.doesNotThrow(() => startupRoot.elements['#inspector'].dispatch('click', { target: { dataset: { repairObject: 'signals' } } }));
+  assert.match(startupRoot.elements['#inspector'].innerHTML, /<pre class="repair-properties">\{\}<\/pre>/);
+  startupRoot.elements['#inspector'].dispatch('click', { target: { dataset: { repairObject: 'stateSegments' } } });
+  assert.match(startupRoot.elements['#inspector'].innerHTML, /<pre class="repair-properties">null<\/pre>/);
+
+  const selectionRoot = fakeEditorRoot(historyPayload(waveformWithTiming(), malformed));
+  const selection = createEditor(selectionRoot);
+  assert.doesNotThrow(() => selectionRoot.elements['#palette'].dispatch('click', {
+    target: { closest: (selector) => selector === '[data-history-id]' ? { dataset: { historyId: 'other' } } : null }
+  }));
+  assert.equal(selection.getState().mode, 'repair');
+  assert.match(selectionRoot.elements['#palette'].innerHTML, /data-history-id="active"/);
+  assert.match(selectionRoot.elements['#editor'].innerHTML, /&quot;transitions&quot;: &quot;broken&quot;/);
+});
+
+test('cascade confirmation accurately says dependent objects may be updated or removed', () => {
+  const prompt = transitionDependencyDeletePrompt('tSYNC, Program');
+
+  assert.match(prompt, /updated or removed as required/);
+  assert.doesNotMatch(prompt, /delete the transition and these dependent objects/i);
+});
