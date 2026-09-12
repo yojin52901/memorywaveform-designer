@@ -43,11 +43,32 @@ const assets = Object.fromEntries(await Promise.all(publicFiles.map(async (relat
   `/${relativePath}`,
   await readFile(resolve(outputRoot, relativePath), 'utf8')
 ])));
+const appSource = assets['/assets/app.js'];
+const appSourceChunkSize = 300_000;
+const appSourceChunks = Array.from(
+  { length: Math.ceil(appSource.length / appSourceChunkSize) },
+  (_, index) => appSource.slice(index * appSourceChunkSize, (index + 1) * appSourceChunkSize)
+);
+const appSourceExportNames = appSourceChunks.map((_, index) => `appSourcePart${index}`);
 
 await Promise.all(serverModules.map(async ([sourcePath, outputPath]) => {
   await writeFile(resolve(outputRoot, 'server', outputPath), await readFile(resolve(projectRoot, sourcePath), 'utf8'));
 }));
-await writeFile(resolve(outputRoot, 'server', 'assets.js'), `export const assets = ${JSON.stringify(assets)};\n`);
+await Promise.all(appSourceChunks.map((source, index) => writeFile(
+  resolve(outputRoot, 'server', `assets-app-${index}.js`),
+  `export const ${appSourceExportNames[index]} = ${JSON.stringify(source)};\n`
+)));
+await writeFile(
+  resolve(outputRoot, 'server', 'assets.js'),
+  `${appSourceExportNames.map((name, index) => `import { ${name} } from './assets-app-${index}.js';`).join('\n')}
+
+export const assets = {
+  ${JSON.stringify('/index.html')}: ${JSON.stringify(assets['/index.html'])},
+  ${JSON.stringify('/assets/app.js')}: ${appSourceExportNames.join(' + ')},
+  ${JSON.stringify('/assets/app.css')}: ${JSON.stringify(assets['/assets/app.css'])}
+};
+`
+);
 await writeFile(
   resolve(outputRoot, 'server', 'index.js'),
   "import { assets } from './assets.js';\nimport { createProductionWorker } from './runtime.js';\n\nexport default createProductionWorker(assets);\n"
